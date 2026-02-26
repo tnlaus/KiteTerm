@@ -1,5 +1,5 @@
 /* ============================================
-   Claude Terminal Manager — Global Styles
+   KiteTerm — Global Styles
    ============================================ */
 
 :root {
@@ -163,6 +163,33 @@ html, body {
   color: white;
 }
 
+/* #4: Unread Badge */
+.tab-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: badgePulse 0.6s ease-in-out 3;
+  pointer-events: none;
+}
+
+@keyframes badgePulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.7; }
+}
+
+/* #6: Drag-and-Drop */
+.tab.dragging {
+  opacity: 0.4;
+}
+
+.tab.drag-over {
+  border-left: 2px solid var(--accent);
+}
+
 #add-tab-btn {
   width: 30px;
   height: 30px;
@@ -187,6 +214,48 @@ html, body {
   border-color: var(--border-light);
 }
 
+/* #3: Workspace Group Headers */
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  height: 24px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.group-header:hover {
+  color: var(--text-secondary);
+}
+
+.group-chevron {
+  font-size: 8px;
+  transition: transform 0.15s ease;
+}
+
+.group-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.group-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.group-tabs.collapsed {
+  display: none;
+}
+
 /* ============================================
    Terminal Container
    ============================================ */
@@ -206,7 +275,59 @@ html, body {
 }
 
 .terminal-wrapper.active {
-  display: block;
+  display: flex;
+  flex-direction: column;
+}
+
+/* #2: Split Panes */
+.pane-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane-split.horizontal {
+  flex-direction: row;
+}
+
+.pane-split.vertical {
+  flex-direction: column;
+}
+
+.pane-leaf {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.pane-leaf.active-pane {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.pane-resize-handle {
+  flex-shrink: 0;
+  background: var(--border);
+  transition: background 0.15s ease;
+  z-index: 5;
+}
+
+.pane-resize-handle:hover,
+.pane-resize-handle.resizing {
+  background: var(--accent);
+}
+
+.pane-resize-handle.horizontal {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.pane-resize-handle.vertical {
+  height: 4px;
+  cursor: row-resize;
 }
 
 /* xterm.js overrides */
@@ -235,6 +356,68 @@ html, body {
 
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: var(--border-light);
+}
+
+/* #7: Terminal Search Bar */
+#search-bar {
+  position: absolute;
+  top: 8px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+#search-bar.hidden {
+  display: none;
+}
+
+#search-input {
+  width: 200px;
+  padding: 4px 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+}
+
+#search-input:focus {
+  border-color: var(--accent);
+}
+
+#search-match-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 40px;
+  text-align: center;
+}
+
+#search-bar button {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+#search-bar button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 /* ============================================
@@ -344,6 +527,8 @@ html, body {
   padding: 28px;
   width: 460px;
   max-width: 90vw;
+  max-height: 90vh;
+  overflow-y: auto;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 
@@ -366,7 +551,9 @@ html, body {
   margin-bottom: 6px;
 }
 
-.form-group input[type="text"] {
+.form-group input[type="text"],
+.form-group input[type="number"],
+.form-group select {
   width: 100%;
   padding: 8px 12px;
   border-radius: var(--radius-md);
@@ -379,12 +566,23 @@ html, body {
   transition: border-color 0.15s ease;
 }
 
-.form-group input[type="text"]:focus {
+.form-group input[type="text"]:focus,
+.form-group input[type="number"]:focus,
+.form-group select:focus {
   border-color: var(--accent);
 }
 
 .form-group input[type="text"]::placeholder {
   color: var(--text-muted);
+}
+
+.form-group select {
+  cursor: pointer;
+}
+
+.form-group select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }
 
 .folder-input {
@@ -498,6 +696,105 @@ html, body {
 }
 
 /* ============================================
+   #5: Quick Switcher
+   ============================================ */
+
+#quick-switcher-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1100;
+  display: flex;
+  justify-content: center;
+  padding-top: 20vh;
+}
+
+#quick-switcher-overlay.hidden {
+  display: none;
+}
+
+#quick-switcher {
+  width: 500px;
+  max-width: 90vw;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+#qs-input {
+  width: 100%;
+  padding: 14px 18px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  outline: none;
+}
+
+#qs-input::placeholder {
+  color: var(--text-muted);
+}
+
+#qs-results {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.qs-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.qs-item:hover,
+.qs-item.selected {
+  background: var(--bg-active);
+}
+
+.qs-item-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.qs-item-name {
+  font-size: 14px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.qs-item-cwd {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-left: auto;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qs-item-match {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.qs-empty {
+  padding: 20px 18px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* ============================================
    Empty State
    ============================================ */
 
@@ -547,7 +844,7 @@ html, body {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 4px;
-  min-width: 180px;
+  min-width: 200px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
   z-index: 2000;
 }
@@ -612,4 +909,12 @@ html, body {
 
 .tab {
   animation: fadeIn 0.2s ease;
+}
+
+#quick-switcher-overlay:not(.hidden) {
+  animation: fadeIn 0.1s ease;
+}
+
+#quick-switcher {
+  animation: slideUp 0.15s ease;
 }

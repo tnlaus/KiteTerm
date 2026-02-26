@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:;">
-  <title>Claude Terminal Manager</title>
+  <title>KiteTerm</title>
   <link rel="stylesheet" href="./styles/xterm.css">
   <link rel="stylesheet" href="./styles/global.css">
 </head>
@@ -17,7 +17,16 @@
     </div>
 
     <!-- Terminal Container -->
-    <div id="terminal-container"></div>
+    <div id="terminal-container">
+      <!-- #7: Search Bar (floating inside terminal area) -->
+      <div id="search-bar" class="hidden">
+        <input type="text" id="search-input" placeholder="Find..." autocomplete="off" />
+        <span id="search-match-count"></span>
+        <button id="search-prev" title="Previous (Shift+Enter)">&uarr;</button>
+        <button id="search-next" title="Next (Enter)">&darr;</button>
+        <button id="search-close" title="Close (Escape)">&times;</button>
+      </div>
+    </div>
 
     <!-- Status Bar -->
     <div id="status-bar">
@@ -27,13 +36,20 @@
       </div>
       <div id="status-cwd"></div>
       <div id="status-shell"></div>
-      <div id="status-shortcuts">Ctrl+1-9 switch tabs</div>
+      <div id="status-shortcuts">Ctrl+P switcher | Ctrl+F find | Ctrl+1-9 tabs</div>
     </div>
 
     <!-- Workspace Modal (hidden by default) -->
     <div id="modal-overlay" class="hidden">
       <div id="workspace-modal">
         <h2 id="modal-title">New Workspace</h2>
+        <!-- #8: Template selector -->
+        <div class="form-group" id="template-group">
+          <label for="ws-template">Template</label>
+          <select id="ws-template">
+            <option value="">None (blank)</option>
+          </select>
+        </div>
         <div class="form-group">
           <label for="ws-name">Name</label>
           <input type="text" id="ws-name" placeholder="My Project" autocomplete="off" />
@@ -41,13 +57,18 @@
         <div class="form-group">
           <label for="ws-cwd">Folder</label>
           <div class="folder-input">
-            <input type="text" id="ws-cwd" placeholder="C:\Users\matt\projects\..." readonly />
+            <input type="text" id="ws-cwd" placeholder="C:\path\to\project" readonly />
             <button id="ws-browse-btn">Browse</button>
           </div>
         </div>
         <div class="form-group">
           <label for="ws-command">Startup Command</label>
           <input type="text" id="ws-command" placeholder="claude" autocomplete="off" />
+        </div>
+        <!-- #3: Group field -->
+        <div class="form-group">
+          <label for="ws-group">Group</label>
+          <input type="text" id="ws-group" placeholder="(optional)" autocomplete="off" />
         </div>
         <div class="form-group">
           <label>Color</label>
@@ -57,6 +78,15 @@
           <input type="checkbox" id="ws-autostart" checked />
           <label for="ws-autostart">Auto-start on launch</label>
         </div>
+        <!-- #9: Auto-restart fields -->
+        <div class="form-group checkbox-group">
+          <input type="checkbox" id="ws-autorestart" />
+          <label for="ws-autorestart">Auto-restart on crash</label>
+        </div>
+        <div class="form-group" id="max-restarts-group" style="display: none;">
+          <label for="ws-max-restarts">Max restarts</label>
+          <input type="number" id="ws-max-restarts" value="3" min="1" max="10" />
+        </div>
         <div class="modal-actions">
           <button id="modal-cancel" class="btn-secondary">Cancel</button>
           <button id="modal-save" class="btn-primary">Save</button>
@@ -64,10 +94,18 @@
       </div>
     </div>
 
+    <!-- #5: Quick Switcher -->
+    <div id="quick-switcher-overlay" class="hidden">
+      <div id="quick-switcher">
+        <input type="text" id="qs-input" placeholder="Switch to workspace..." autocomplete="off" />
+        <div id="qs-results"></div>
+      </div>
+    </div>
+
     <!-- Empty State -->
     <div id="empty-state" class="hidden">
       <div class="empty-content">
-        <div class="empty-icon">⌨</div>
+        <div class="empty-icon">&#x2328;</div>
         <h2>No workspaces yet</h2>
         <p>Create a workspace to get started with Claude Code</p>
         <button id="empty-add-btn" class="btn-primary">+ New Workspace</button>

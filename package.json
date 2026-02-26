@@ -1,7 +1,7 @@
 {
-  "name": "claude-terminal-manager",
+  "name": "kiteterm",
   "version": "0.1.0",
-  "description": "Multi-session Claude Code workspace terminal manager",
+  "description": "Multi-session workspace terminal manager for Claude Code power users",
   "main": "dist/main/index.js",
   "scripts": {
     "start": "npm run build && electron .",
@@ -14,9 +14,10 @@
     "postinstall": "electron-rebuild || echo 'electron-rebuild failed (missing build tools?) - prebuilt binaries may still work'"
   },
   "dependencies": {
-    "@xterm/xterm": "^5.5.0",
     "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-search": "^0.15.0",
     "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0",
     "electron-store": "^7.0.0",
     "node-pty": "^1.0.0",
     "uuid": "^9.0.0"
@@ -31,13 +32,15 @@
     "typescript": "^5.3.3"
   },
   "build": {
-    "appId": "com.tnlit.claude-terminal-manager",
-    "productName": "Claude Terminal Manager",
+    "appId": "com.tnlaus.kiteterm",
+    "productName": "KiteTerm",
     "directories": {
       "output": "release"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "assets/icon.ico"
     },
     "nsis": {

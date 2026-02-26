@@ -1,5 +1,5 @@
 import Store from 'electron-store';
-import { AppConfig, Workspace, WindowState } from '../shared/types';
+import { AppConfig, Workspace, WindowState, WorkspaceTemplate, WorkspaceGroup } from '../shared/types';
 import { v4 as uuid } from 'uuid';
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -15,10 +15,12 @@ const DEFAULT_CONFIG: AppConfig = {
   },
   activeTabId: null,
   theme: 'dark',
+  templates: [],
+  groups: [],
 };
 
 const store = new Store<AppConfig>({
-  name: 'claude-terminal-config',
+  name: 'kiteterm-config',
   defaults: DEFAULT_CONFIG,
 });
 
@@ -30,6 +32,8 @@ export function getConfig(): AppConfig {
     window: store.get('window', DEFAULT_CONFIG.window),
     activeTabId: store.get('activeTabId', null),
     theme: store.get('theme', 'dark'),
+    templates: store.get('templates', []),
+    groups: store.get('groups', []),
   };
 }
 
@@ -64,7 +68,14 @@ export function deleteWorkspace(id: string): boolean {
 
 export function reorderWorkspaces(ids: string[]): void {
   const workspaces = getWorkspaces();
+  const idSet = new Set(ids);
   const ordered = ids.map(id => workspaces.find(w => w.id === id)).filter(Boolean) as Workspace[];
+  // Append any workspaces missing from the provided list to prevent data loss
+  for (const ws of workspaces) {
+    if (!idSet.has(ws.id)) {
+      ordered.push(ws);
+    }
+  }
   store.set('workspaces', ordered);
 }
 
@@ -78,6 +89,64 @@ export function setActiveTab(id: string | null): void {
 
 export function getDefaultShell(): string {
   return store.get('defaultShell', DEFAULT_CONFIG.defaultShell);
+}
+
+// #8: Template operations
+export function getTemplates(): WorkspaceTemplate[] {
+  return store.get('templates', []);
+}
+
+export function createTemplate(template: WorkspaceTemplate): WorkspaceTemplate {
+  const templates = getTemplates();
+  templates.push(template);
+  store.set('templates', templates);
+  return template;
+}
+
+export function deleteTemplate(name: string): boolean {
+  const templates = getTemplates();
+  const filtered = templates.filter(t => t.name !== name);
+  if (filtered.length === templates.length) return false;
+  store.set('templates', filtered);
+  return true;
+}
+
+// #3: Group operations
+export function getGroups(): WorkspaceGroup[] {
+  return store.get('groups', []);
+}
+
+export function toggleGroup(name: string): WorkspaceGroup {
+  const groups = getGroups();
+  const existing = groups.find(g => g.name === name);
+  if (existing) {
+    existing.collapsed = !existing.collapsed;
+    store.set('groups', groups);
+    return existing;
+  }
+  const newGroup: WorkspaceGroup = { name, collapsed: false, order: groups.length };
+  groups.push(newGroup);
+  store.set('groups', groups);
+  return newGroup;
+}
+
+export function ensureGroup(name: string): WorkspaceGroup {
+  const groups = getGroups();
+  const existing = groups.find(g => g.name === name);
+  if (existing) return existing;
+  const newGroup: WorkspaceGroup = { name, collapsed: false, order: groups.length };
+  groups.push(newGroup);
+  store.set('groups', groups);
+  return newGroup;
+}
+
+// #10: Import config (imports workspaces + templates + groups + theme, not window state)
+export function importConfig(data: Partial<AppConfig>): void {
+  if (data.workspaces) store.set('workspaces', data.workspaces);
+  if (data.templates) store.set('templates', data.templates);
+  if (data.groups) store.set('groups', data.groups);
+  if (data.theme) store.set('theme', data.theme);
+  if (data.defaultShell) store.set('defaultShell', data.defaultShell);
 }
 
 export { store };

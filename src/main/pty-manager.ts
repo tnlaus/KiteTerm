@@ -24,7 +24,7 @@ export function spawnPty(
 
   // Strip Claude Code session markers so spawned terminals
   // don't think they're inside a Claude session
-  const BLOCKED_KEYS = new Set(['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'VIPSHOME']);
+  const BLOCKED_KEYS = new Set(['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT']);
   const cleanEnv: Record<string, string | undefined> = { ...process.env };
   for (const key of Object.keys(cleanEnv)) {
     if (key.toUpperCase().startsWith('CLAUDE') || BLOCKED_KEYS.has(key)) {
@@ -37,7 +37,7 @@ export function spawnPty(
     ...env,
     // Force color support in terminals
     COLORTERM: 'truecolor',
-    TERM_PROGRAM: 'claude-terminal-manager',
+    TERM_PROGRAM: 'kiteterm',
   };
 
   try {
@@ -122,6 +122,16 @@ export function killPty(workspaceId: string): void {
 export function killAllPtys(): void {
   for (const [id] of activePtys) {
     killPty(id);
+  }
+}
+
+// Kill all PTYs whose key starts with the given workspace ID prefix.
+// Split panes use keys like "workspaceId:pane-0", "workspaceId:pane-1", etc.
+export function killPtysForWorkspace(workspaceIdPrefix: string): void {
+  for (const [id] of activePtys) {
+    if (id === workspaceIdPrefix || id.startsWith(workspaceIdPrefix + ':')) {
+      killPty(id);
+    }
   }
 }
 

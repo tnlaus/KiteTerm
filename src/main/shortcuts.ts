@@ -1,4 +1,4 @@
-import { globalShortcut, BrowserWindow } from 'electron';
+import { globalShortcut, BrowserWindow, Menu } from 'electron';
 
 export function registerShortcuts(getWindow: () => BrowserWindow | null): void {
   // Global shortcut to toggle window visibility
@@ -16,7 +16,6 @@ export function registerShortcuts(getWindow: () => BrowserWindow | null): void {
 }
 
 export function registerWindowShortcuts(window: BrowserWindow): void {
-  const { Menu } = require('electron');
 
   // Use before-input-event for reliable shortcut capture —
   // menu accelerators don't reliably catch Ctrl+Tab or Ctrl+1-9
@@ -51,6 +50,41 @@ export function registerWindowShortcuts(window: BrowserWindow): void {
       window.webContents.send('shortcut:restart-terminal');
       return;
     }
+
+    // #7: Ctrl+F — terminal search
+    if (input.key === 'f' && !input.shift && !input.alt) {
+      event.preventDefault();
+      window.webContents.send('shortcut:search');
+      return;
+    }
+
+    // #5: Ctrl+P — quick switcher
+    if (input.key === 'p' && !input.shift && !input.alt) {
+      event.preventDefault();
+      window.webContents.send('shortcut:quick-switcher');
+      return;
+    }
+
+    // #2: Ctrl+Shift+D — split pane down
+    if (input.key === 'D' && input.shift && !input.alt) {
+      event.preventDefault();
+      window.webContents.send('shortcut:split-down');
+      return;
+    }
+
+    // #2: Ctrl+Shift+E — split pane right
+    if (input.key === 'E' && input.shift && !input.alt) {
+      event.preventDefault();
+      window.webContents.send('shortcut:split-right');
+      return;
+    }
+
+    // #2: Ctrl+Shift+W — close pane
+    if (input.key === 'W' && input.shift && !input.alt) {
+      event.preventDefault();
+      window.webContents.send('shortcut:close-pane');
+      return;
+    }
   });
 
   // Menu bar for discoverability (and Ctrl+T, Ctrl+W, Ctrl+Q)
@@ -69,6 +103,15 @@ export function registerWindowShortcuts(window: BrowserWindow): void {
           click: () => window.webContents.send('shortcut:close-tab'),
         },
         { type: 'separator' },
+        {
+          label: 'Export Config...',
+          click: () => window.webContents.send('shortcut:export-config'),
+        },
+        {
+          label: 'Import Config...',
+          click: () => window.webContents.send('shortcut:import-config'),
+        },
+        { type: 'separator' },
         { label: 'Quit', accelerator: 'CommandOrControl+Q', role: 'quit' },
       ],
     },
@@ -84,6 +127,13 @@ export function registerWindowShortcuts(window: BrowserWindow): void {
           enabled: true,
           click: () => {},
         },
+        { type: 'separator' },
+        { label: 'Find', accelerator: 'CommandOrControl+F', enabled: true, click: () => window.webContents.send('shortcut:search') },
+        { label: 'Quick Switcher', accelerator: 'CommandOrControl+P', enabled: true, click: () => window.webContents.send('shortcut:quick-switcher') },
+        { type: 'separator' },
+        { label: 'Split Down', accelerator: 'CommandOrControl+Shift+D', enabled: true, click: () => window.webContents.send('shortcut:split-down') },
+        { label: 'Split Right', accelerator: 'CommandOrControl+Shift+E', enabled: true, click: () => window.webContents.send('shortcut:split-right') },
+        { label: 'Close Pane', accelerator: 'CommandOrControl+Shift+W', enabled: true, click: () => window.webContents.send('shortcut:close-pane') },
       ],
     },
     {

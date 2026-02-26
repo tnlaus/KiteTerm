@@ -40,7 +40,7 @@ function createWindow(): void {
     minWidth: 600,
     minHeight: 400,
     backgroundColor: '#0D1117',
-    title: 'Claude Terminal Manager',
+    title: 'KiteTerm',
     icon: path.join(__dirname, '../../assets/icon.png'),
     show: false, // Show after ready-to-show
     webPreferences: {
@@ -68,17 +68,21 @@ function createWindow(): void {
     mainWindow?.focus();
   });
 
-  // Save window state on move/resize
+  // Save window state on move/resize (debounced to avoid excessive disk writes)
+  let saveStateTimeout: ReturnType<typeof setTimeout> | null = null;
   const saveState = () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    const bounds = mainWindow.getBounds();
-    saveWindowState({
-      width: bounds.width,
-      height: bounds.height,
-      x: bounds.x,
-      y: bounds.y,
-      isMaximized: mainWindow.isMaximized(),
-    });
+    if (saveStateTimeout) clearTimeout(saveStateTimeout);
+    saveStateTimeout = setTimeout(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      const bounds = mainWindow.getBounds();
+      saveWindowState({
+        width: bounds.width,
+        height: bounds.height,
+        x: bounds.x,
+        y: bounds.y,
+        isMaximized: mainWindow.isMaximized(),
+      });
+    }, 300);
   };
 
   mainWindow.on('resize', saveState);

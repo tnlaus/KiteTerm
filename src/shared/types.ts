@@ -8,6 +8,29 @@ export interface Workspace {
   color: string;
   env?: Record<string, string>;
   shell?: string; // Override default shell per workspace
+  autoRestart?: boolean; // #9: Auto-restart on crash
+  maxRestarts?: number; // #9: Max restart attempts (default 3)
+  group?: string; // #3: Workspace group name
+}
+
+// #8: Workspace template (like Workspace but no id/cwd)
+export interface WorkspaceTemplate {
+  name: string;
+  startupCommand?: string;
+  autoStart: boolean;
+  color: string;
+  env?: Record<string, string>;
+  shell?: string;
+  autoRestart?: boolean;
+  maxRestarts?: number;
+  group?: string;
+}
+
+// #3: Workspace group
+export interface WorkspaceGroup {
+  name: string;
+  collapsed: boolean;
+  order: number;
 }
 
 // Full app config schema
@@ -18,6 +41,8 @@ export interface AppConfig {
   window: WindowState;
   activeTabId: string | null;
   theme: 'dark' | 'light';
+  templates: WorkspaceTemplate[]; // #8
+  groups: WorkspaceGroup[]; // #3
 }
 
 export interface WindowState {
@@ -80,13 +105,24 @@ export const IPC_CHANNELS = {
   WORKSPACE_UPDATE: 'workspace:update',
   WORKSPACE_DELETE: 'workspace:delete',
   WORKSPACE_PICK_FOLDER: 'workspace:pick-folder',
+  WORKSPACE_REORDER: 'workspace:reorder', // #6
+  WORKSPACE_TOGGLE_GROUP: 'workspace:toggle-group', // #3
+  WORKSPACE_SET_GROUP: 'workspace:set-group', // #3
 
   // App operations
   APP_GET_CONFIG: 'app:get-config',
-  APP_SAVE_WINDOW_STATE: 'app:save-window-state',
   APP_SET_ACTIVE_TAB: 'app:set-active-tab',
   APP_MINIMIZE_TO_TRAY: 'app:minimize-to-tray',
   APP_QUIT: 'app:quit',
+  APP_EXPORT_CONFIG: 'app:export-config', // #10
+  APP_IMPORT_CONFIG: 'app:import-config', // #10
+  APP_SAVE_SCROLLBACK: 'app:save-scrollback', // #1
+  APP_LOAD_SCROLLBACK: 'app:load-scrollback', // #1
+
+  // Template operations (#8)
+  TEMPLATE_LIST: 'template:list',
+  TEMPLATE_CREATE: 'template:create',
+  TEMPLATE_DELETE: 'template:delete',
 } as const;
 
 // Preset colors for workspaces

@@ -27,7 +27,7 @@ export function createTray(getWindow: () => BrowserWindow | null): Tray {
     tray = new Tray(createPlaceholderIcon());
   }
 
-  tray.setToolTip('Claude Terminal Manager');
+  tray.setToolTip('KiteTerm');
   updateTrayMenu(getWindow);
 
   // Click tray icon to show/hide window

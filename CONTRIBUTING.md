@@ -1,4 +1,4 @@
-# Contributing to Claude Terminal Manager
+# Contributing to KiteTerm
 
 Thanks for your interest in contributing! This project is maintained by [TNL IT](https://tnlit.com.au) and we welcome contributions from the community.
 
@@ -14,8 +14,8 @@ Thanks for your interest in contributing! This project is maintained by [TNL IT]
 ### Setup
 
 ```bash
-git clone https://github.com/tnl-it/claude-terminal-manager.git
-cd claude-terminal-manager
+git clone https://github.com/tnlaus/KiteTerm.git
+cd KiteTerm
 npm install
 npx electron-rebuild
 npm start
@@ -41,7 +41,7 @@ src/
 │   ├── index.html      # HTML shell
 │   ├── index.ts        # All UI logic
 │   └── styles/         # CSS
-├── preload/        # Secure bridge between main ↔ renderer
+├── preload/        # Secure bridge between main and renderer
 │   └── index.ts        # Context bridge API
 └── shared/         # Shared types and constants
     └── types.ts
@@ -63,8 +63,6 @@ Open an issue with:
 ### Suggesting Features
 
 Open an issue with the `enhancement` label. Describe the use case — *why* you want this feature, not just *what*. The best feature requests explain the problem they're solving.
-
-Check the [Roadmap](README.md#roadmap) first to see if it's already planned.
 
 ### Submitting Code
 
@@ -104,17 +102,17 @@ Look for issues labelled `good first issue`. These are typically:
 ## Code Style
 
 - TypeScript strict mode
-- Functional React components with hooks (no class components)
-- IPC channel names are namespaced: `pty:*`, `workspace:*`, `app:*`
+- Vanilla TypeScript for renderer (no framework)
+- IPC channel names are namespaced: `pty:*`, `workspace:*`, `app:*`, `template:*`
 - CSS uses custom properties defined in `global.css`
-- No external UI framework — vanilla CSS for now (keeps the bundle small)
+- No external UI framework — vanilla CSS (keeps the bundle small)
 
 ## Architecture Principles
 
 1. **Main process does the heavy lifting** — PTY management, file system, config. The renderer just shows UI.
 2. **Context isolation** — All communication between main and renderer goes through the preload bridge. No `nodeIntegration`.
 3. **Config is just JSON** — `electron-store` writes to `%APPDATA%`. No database, no cloud. Users own their data.
-4. **Tabs are independent** — Each tab has its own PTY process. Closing a tab kills its process. No shared state between terminals.
+4. **Tabs are independent** — Each tab has its own PTY process(es). Closing a tab kills its processes. No shared state between terminals.
 
 ## Questions?
 
