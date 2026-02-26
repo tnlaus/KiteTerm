@@ -329,32 +329,47 @@ function rebuildPaneDOM(workspaceId: string): void {
   });
 }
 
+const MAX_PANES_PER_TAB = 4;
+const splitInProgress = new Set<string>();
+
 async function splitPane(workspaceId: string, direction: 'horizontal' | 'vertical'): Promise<void> {
   const tab = tabs.get(workspaceId);
   if (!tab) return;
 
-  const activePane = getActivePane(tab);
-  if (!activePane) return;
+  // Prevent concurrent splits from bypassing the limit
+  if (splitInProgress.has(workspaceId)) return;
 
-  tab.paneCounter++;
-  const newLeaf = createPaneLeaf(workspaceId, tab.paneCounter);
+  // Limit splits to prevent runaway pane creation
+  if (findAllLeaves(tab.paneRoot).length >= MAX_PANES_PER_TAB) return;
 
-  const splitNode: PaneSplit = {
-    type: 'split',
-    direction,
-    children: [activePane, newLeaf],
-    ratio: 0.5,
-    container: document.createElement('div'),
-  };
+  splitInProgress.add(workspaceId);
 
-  // Replace the leaf in the tree with the split
-  replacePaneInTree(tab, activePane, splitNode);
+  try {
+    const activePane = getActivePane(tab);
+    if (!activePane) return;
 
-  rebuildPaneDOM(workspaceId);
+    tab.paneCounter++;
+    const newLeaf = createPaneLeaf(workspaceId, tab.paneCounter);
 
-  // Spawn PTY for new pane
-  await spawnPaneTerminal(workspaceId, newLeaf);
-  setActivePane(workspaceId, newLeaf.id);
+    const splitNode: PaneSplit = {
+      type: 'split',
+      direction,
+      children: [activePane, newLeaf],
+      ratio: 0.5,
+      container: document.createElement('div'),
+    };
+
+    // Replace the leaf in the tree with the split
+    replacePaneInTree(tab, activePane, splitNode);
+
+    rebuildPaneDOM(workspaceId);
+
+    // Spawn PTY for new pane
+    await spawnPaneTerminal(workspaceId, newLeaf);
+    setActivePane(workspaceId, newLeaf.id);
+  } finally {
+    splitInProgress.delete(workspaceId);
+  }
 }
 
 function replacePaneInTree(tab: TabState, target: PaneNode, replacement: PaneNode): void {
@@ -408,6 +423,72 @@ function closePaneById(workspaceId: string, paneId: string): void {
 
 function findSiblingAndRemove(tab: TabState, target: PaneLeaf): PaneNode | null {
   return findSiblingInNode(tab, tab.paneRoot, target);
+}
+
+// Close the split in a given direction relative to the active pane.
+// 'vertical' closes a down split, 'horizontal' closes a right split.
+// Keeps the active pane, removes the sibling.
+function closeSplitDirection(workspaceId: string, direction: 'horizontal' | 'vertical'): void {
+  const tab = tabs.get(workspaceId);
+  if (!tab) return;
+
+  const activePane = getActivePane(tab);
+  if (!activePane) return;
+
+  // Find the parent split of the active pane that matches the direction
+  const parentSplit = findParentSplit(tab.paneRoot, activePane, direction);
+  if (!parentSplit) return;
+
+  // Determine which child is the active pane (or contains it) and which is the sibling to remove
+  const activeIndex = containsPane(parentSplit.children[0], activePane) ? 0 : 1;
+  const siblingNode = parentSplit.children[1 - activeIndex];
+
+  // Kill all PTYs in the sibling subtree
+  const siblingLeaves = findAllLeaves(siblingNode);
+  for (const leaf of siblingLeaves) {
+    api.pty.kill(leaf.id);
+    leaf.terminal.dispose();
+  }
+
+  // Replace the parent split with the child that contains the active pane
+  const survivor = parentSplit.children[activeIndex];
+  replacePaneInTree(tab, parentSplit, survivor);
+
+  rebuildPaneDOM(workspaceId);
+
+  // Ensure active pane is still set
+  const survivorLeaves = findAllLeaves(survivor);
+  if (survivorLeaves.length > 0 && !survivorLeaves.find(l => l.id === tab.activePaneId)) {
+    setActivePane(workspaceId, survivorLeaves[0].id);
+  }
+}
+
+function findParentSplit(node: PaneNode, target: PaneLeaf, direction: 'horizontal' | 'vertical'): PaneSplit | null {
+  if (node.type !== 'split') return null;
+
+  // Check if either child is (or contains) the target
+  for (let i = 0; i < 2; i++) {
+    if (containsPane(node.children[i], target)) {
+      // If this split matches the direction and the child directly is or contains the target, this is a match
+      if (node.direction === direction) {
+        // But first check deeper — a nested split of the same direction closer to the target takes priority
+        if (node.children[i].type === 'split') {
+          const deeper = findParentSplit(node.children[i], target, direction);
+          if (deeper) return deeper;
+        }
+        return node;
+      }
+      // Direction doesn't match, recurse deeper
+      return findParentSplit(node.children[i], target, direction);
+    }
+  }
+  return null;
+}
+
+function containsPane(node: PaneNode, target: PaneLeaf): boolean {
+  if (node === target) return true;
+  if (node.type !== 'split') return false;
+  return containsPane(node.children[0], target) || containsPane(node.children[1], target);
 }
 
 function findSiblingInNode(tab: TabState, node: PaneNode, target: PaneLeaf): PaneNode | null {
@@ -907,6 +988,8 @@ function showContextMenu(x: number, y: number, workspaceId: string): void {
     // #2: Split pane options
     { label: 'Split Down', shortcut: 'Ctrl+Shift+D', action: () => splitPane(workspaceId, 'vertical') },
     { label: 'Split Right', shortcut: 'Ctrl+Shift+E', action: () => splitPane(workspaceId, 'horizontal') },
+    { label: 'Close Split Down', action: () => closeSplitDirection(workspaceId, 'vertical') },
+    { label: 'Close Split Right', action: () => closeSplitDirection(workspaceId, 'horizontal') },
     { separator: true },
     { label: 'Close Tab', shortcut: 'Ctrl+W', action: () => closeTab(workspaceId) },
     { label: 'Delete Workspace', action: () => deleteWorkspaceWithConfirm(workspaceId), danger: true },

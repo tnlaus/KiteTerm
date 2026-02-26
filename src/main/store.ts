@@ -1,6 +1,9 @@
 import Store from 'electron-store';
 import { AppConfig, Workspace, WindowState, WorkspaceTemplate, WorkspaceGroup } from '../shared/types';
 import { v4 as uuid } from 'uuid';
+import * as fs from 'fs';
+import * as path from 'path';
+import { app } from 'electron';
 
 const DEFAULT_CONFIG: AppConfig = {
   version: 1,
@@ -23,6 +26,38 @@ const store = new Store<AppConfig>({
   name: 'kiteterm-config',
   defaults: DEFAULT_CONFIG,
 });
+
+// One-time migration from old "claude-terminal-config" store
+(function migrateOldConfig() {
+  const currentWorkspaces = store.get('workspaces', []);
+  if (currentWorkspaces.length > 0) return; // Already has data, skip
+
+  const oldConfigPath = path.join(
+    app.getPath('appData'),
+    'claude-terminal-manager',
+    'claude-terminal-config.json'
+  );
+
+  if (!fs.existsSync(oldConfigPath)) return;
+
+  try {
+    const raw = fs.readFileSync(oldConfigPath, 'utf-8');
+    const oldConfig = JSON.parse(raw);
+
+    if (Array.isArray(oldConfig.workspaces) && oldConfig.workspaces.length > 0) {
+      store.set('workspaces', oldConfig.workspaces);
+      if (oldConfig.activeTabId) store.set('activeTabId', oldConfig.activeTabId);
+      if (oldConfig.window) store.set('window', oldConfig.window);
+      if (Array.isArray(oldConfig.templates)) store.set('templates', oldConfig.templates);
+      if (Array.isArray(oldConfig.groups)) store.set('groups', oldConfig.groups);
+      if (oldConfig.theme) store.set('theme', oldConfig.theme);
+      if (oldConfig.defaultShell) store.set('defaultShell', oldConfig.defaultShell);
+      console.log(`Migrated ${oldConfig.workspaces.length} workspace(s) from old config`);
+    }
+  } catch (err) {
+    console.warn('Failed to migrate old config:', err);
+  }
+})();
 
 export function getConfig(): AppConfig {
   return {

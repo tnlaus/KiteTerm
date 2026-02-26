@@ -159,6 +159,6 @@ Whether it's a bug fix, feature, docs improvement, or just a typo — all contri
 
 <div align="center">
 
-Built by **[TNL IT](https://tnlit.com.au)** — Federal Government IT Consulting
+Built by **[TNL IT](https://tnlit.com.au)**
 
 </div>
