@@ -130,12 +130,17 @@ export function stopAllMetricsWatchers(): void {
 // ============================================
 
 export function getHookScriptPath(): string {
-  // In packaged app, assets are in resources/assets
+  // In packaged app, extraResources copies assets/ to resources/assets/
   // In dev, they're in the project root/assets
   const appPath = app.getAppPath();
   const possiblePaths = [
-    path.join(appPath, 'assets', 'claude-statusline-hook.js'),
+    // Packaged: extraResources → resources/assets/
+    path.join(process.resourcesPath, 'assets', 'claude-statusline-hook.js'),
+    // Packaged: files inside ASAR parent
     path.join(appPath, '..', 'assets', 'claude-statusline-hook.js'),
+    // Dev: project root/assets
+    path.join(appPath, 'assets', 'claude-statusline-hook.js'),
+    // Dev: relative to dist/main/
     path.join(__dirname, '..', '..', 'assets', 'claude-statusline-hook.js'),
   ];
 
@@ -143,7 +148,7 @@ export function getHookScriptPath(): string {
     if (fs.existsSync(p)) return p;
   }
 
-  // Fallback to first path
+  // Fallback to extraResources path (most likely in production)
   return possiblePaths[0];
 }
 
