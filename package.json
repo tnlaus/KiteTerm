@@ -1,0 +1,60 @@
+{
+  "name": "claude-terminal-manager",
+  "version": "0.1.0",
+  "description": "Multi-session Claude Code workspace terminal manager",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "start": "npm run build && electron .",
+    "build": "tsc && node build.js",
+    "build:main": "tsc",
+    "build:renderer": "node build.js",
+    "watch": "tsc --watch",
+    "package": "npm run build && electron-builder --win",
+    "make": "npm run build && electron-builder --win --publish never",
+    "postinstall": "electron-rebuild || echo 'electron-rebuild failed (missing build tools?) - prebuilt binaries may still work'"
+  },
+  "dependencies": {
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "electron-store": "^7.0.0",
+    "node-pty": "^1.0.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/uuid": "^9.0.7",
+    "electron": "^28.1.0",
+    "electron-builder": "^24.9.0",
+    "electron-rebuild": "^3.2.9",
+    "esbuild": "^0.19.11",
+    "typescript": "^5.3.3"
+  },
+  "build": {
+    "appId": "com.tnlit.claude-terminal-manager",
+    "productName": "Claude Terminal Manager",
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "files": [
+      "dist/**/*",
+      "assets/**/*",
+      "node_modules/**/*",
+      "!node_modules/**/build/Release/.deps"
+    ],
+    "extraResources": [
+      {
+        "from": "assets/",
+        "to": "assets/"
+      }
+    ]
+  }
+}
