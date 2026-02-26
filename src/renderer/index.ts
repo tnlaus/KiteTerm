@@ -225,7 +225,7 @@ function setActivePane(workspaceId: string, paneId: string): void {
   }
 }
 
-function renderPaneTree(node: PaneNode, parentEl: HTMLElement): void {
+function renderPaneTree(node: PaneNode, parentEl: HTMLElement, workspaceId?: string): void {
   if (node.type === 'leaf') {
     parentEl.appendChild(node.container);
     return;
@@ -234,12 +234,14 @@ function renderPaneTree(node: PaneNode, parentEl: HTMLElement): void {
   node.container = document.createElement('div');
   node.container.className = `pane-split ${node.direction}`;
 
+  // Find workspaceId from the first leaf if not passed
+  const wsId = workspaceId || findAllLeaves(node)[0]?.id.split(':pane-')[0];
+
   const child0Wrapper = document.createElement('div');
+  child0Wrapper.className = 'pane-child-wrapper';
   child0Wrapper.style.flex = `${node.ratio}`;
-  child0Wrapper.style.minWidth = '0';
-  child0Wrapper.style.minHeight = '0';
-  child0Wrapper.style.display = 'flex';
-  renderPaneTree(node.children[0], child0Wrapper);
+  renderPaneTree(node.children[0], child0Wrapper, wsId);
+  addPaneCloseButton(child0Wrapper, node.children[0], wsId);
   node.container.appendChild(child0Wrapper);
 
   // Resize handle
@@ -249,14 +251,29 @@ function renderPaneTree(node: PaneNode, parentEl: HTMLElement): void {
   node.container.appendChild(handle);
 
   const child1Wrapper = document.createElement('div');
+  child1Wrapper.className = 'pane-child-wrapper';
   child1Wrapper.style.flex = `${1 - node.ratio}`;
-  child1Wrapper.style.minWidth = '0';
-  child1Wrapper.style.minHeight = '0';
-  child1Wrapper.style.display = 'flex';
-  renderPaneTree(node.children[1], child1Wrapper);
+  renderPaneTree(node.children[1], child1Wrapper, wsId);
+  addPaneCloseButton(child1Wrapper, node.children[1], wsId);
   node.container.appendChild(child1Wrapper);
 
   parentEl.appendChild(node.container);
+}
+
+function addPaneCloseButton(wrapper: HTMLElement, childNode: PaneNode, workspaceId: string): void {
+  // Only add close button to leaf panes (not nested splits)
+  if (childNode.type !== 'leaf') return;
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'pane-close-btn';
+  closeBtn.textContent = '\u00d7';
+  closeBtn.title = 'Close pane';
+  closeBtn.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    closePaneById(workspaceId, childNode.id);
+  });
+  wrapper.appendChild(closeBtn);
 }
 
 function setupResizeHandle(handle: HTMLElement, split: PaneSplit, firstChildWrapper: HTMLElement): void {
@@ -318,7 +335,7 @@ function rebuildPaneDOM(workspaceId: string): void {
   wrapper.innerHTML = '';
   renderPaneTree(tab.paneRoot, wrapper as HTMLElement);
 
-  // Open and fit all terminals
+  // Open and fit all terminals, then add close buttons
   requestAnimationFrame(() => {
     findAllLeaves(tab.paneRoot).forEach(leaf => {
       if (!leaf.terminal.element) {
@@ -329,47 +346,32 @@ function rebuildPaneDOM(workspaceId: string): void {
   });
 }
 
-const MAX_PANES_PER_TAB = 4;
-const splitInProgress = new Set<string>();
-
 async function splitPane(workspaceId: string, direction: 'horizontal' | 'vertical'): Promise<void> {
   const tab = tabs.get(workspaceId);
   if (!tab) return;
 
-  // Prevent concurrent splits from bypassing the limit
-  if (splitInProgress.has(workspaceId)) return;
+  const activePane = getActivePane(tab);
+  if (!activePane) return;
 
-  // Limit splits to prevent runaway pane creation
-  if (findAllLeaves(tab.paneRoot).length >= MAX_PANES_PER_TAB) return;
+  tab.paneCounter++;
+  const newLeaf = createPaneLeaf(workspaceId, tab.paneCounter);
 
-  splitInProgress.add(workspaceId);
+  const splitNode: PaneSplit = {
+    type: 'split',
+    direction,
+    children: [activePane, newLeaf],
+    ratio: 0.5,
+    container: document.createElement('div'),
+  };
 
-  try {
-    const activePane = getActivePane(tab);
-    if (!activePane) return;
+  // Replace the leaf in the tree with the split
+  replacePaneInTree(tab, activePane, splitNode);
 
-    tab.paneCounter++;
-    const newLeaf = createPaneLeaf(workspaceId, tab.paneCounter);
+  rebuildPaneDOM(workspaceId);
 
-    const splitNode: PaneSplit = {
-      type: 'split',
-      direction,
-      children: [activePane, newLeaf],
-      ratio: 0.5,
-      container: document.createElement('div'),
-    };
-
-    // Replace the leaf in the tree with the split
-    replacePaneInTree(tab, activePane, splitNode);
-
-    rebuildPaneDOM(workspaceId);
-
-    // Spawn PTY for new pane
-    await spawnPaneTerminal(workspaceId, newLeaf);
-    setActivePane(workspaceId, newLeaf.id);
-  } finally {
-    splitInProgress.delete(workspaceId);
-  }
+  // Spawn PTY for new pane
+  await spawnPaneTerminal(workspaceId, newLeaf);
+  setActivePane(workspaceId, newLeaf.id);
 }
 
 function replacePaneInTree(tab: TabState, target: PaneNode, replacement: PaneNode): void {
