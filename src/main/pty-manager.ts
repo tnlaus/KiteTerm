@@ -2,6 +2,7 @@ import * as pty from 'node-pty';
 import { BrowserWindow } from 'electron';
 import { IPC_CHANNELS, PtySpawnRequest } from '../shared/types';
 import { getDefaultShell } from './store';
+import { getMetricsDir, startMetricsWatcher, stopMetricsWatcher } from './claude-metrics';
 
 interface ManagedPty {
   process: pty.IPty;
@@ -38,6 +39,9 @@ export function spawnPty(
     // Force color support in terminals
     COLORTERM: 'truecolor',
     TERM_PROGRAM: 'kiteterm',
+    // Claude Code integration: inject metrics env vars
+    KITETERM_METRICS_DIR: getMetricsDir(),
+    KITETERM_WORKSPACE_ID: workspaceId,
   };
 
   try {
@@ -82,6 +86,9 @@ export function spawnPty(
 
     activePtys.set(workspaceId, managed);
 
+    // Start metrics watcher for this workspace
+    startMetricsWatcher(workspaceId, window);
+
     return { pid: ptyProcess.pid };
   } catch (err: any) {
     return { error: err.message || 'Failed to spawn PTY' };
@@ -116,6 +123,7 @@ export function killPty(workspaceId: string): void {
     }
     managed.isAlive = false;
     activePtys.delete(workspaceId);
+    stopMetricsWatcher(workspaceId);
   }
 }
 

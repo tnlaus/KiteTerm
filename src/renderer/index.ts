@@ -2,7 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
-import { Workspace, WORKSPACE_COLORS, TerminalStatus, WorkspaceTemplate, WorkspaceGroup } from '../shared/types';
+import { Workspace, WORKSPACE_COLORS, TerminalStatus, WorkspaceTemplate, WorkspaceGroup, SerializedPaneNode, SerializedPaneLeaf, SerializedPaneSplit, AppSettings, ClaudeMetricsEntry, ClaudeAnalytics, AnthropicApiConfig } from '../shared/types';
 
 // Type-safe access to the preload API
 const api = window.api;
@@ -62,6 +62,28 @@ let groupStates = new Map<string, boolean>(); // name → collapsed
 // #8: Templates cache
 let templates: WorkspaceTemplate[] = [];
 
+// Sidebar state
+let allWorkspaces: Workspace[] = [];
+let sidebarVisible = true;
+
+// Settings cache
+let currentSettings: AppSettings = {
+  fontSize: 14,
+  fontFamily: "'Cascadia Code', 'Consolas', 'JetBrains Mono', 'Fira Code', monospace",
+  defaultShell: 'powershell.exe',
+  scrollbackLimit: 10000,
+  theme: 'dark',
+  notifyOnIdle: false,
+  notifyDelaySeconds: 5,
+};
+
+// Notification on command completion state
+const paneIdleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let windowIsFocused = true;
+
+// Claude Code metrics state
+const claudeMetrics = new Map<string, ClaudeMetricsEntry>();
+
 // ============================================
 // DOM References
 // ============================================
@@ -112,11 +134,39 @@ const qsInput = document.getElementById('qs-input') as HTMLInputElement;
 const qsResults = document.getElementById('qs-results')!;
 let qsSelectedIndex = 0;
 
+// Sidebar
+const sidebar = document.getElementById('sidebar')!;
+const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn')!;
+const sidebarAddBtn = document.getElementById('sidebar-add-btn')!;
+const sidebarFilter = document.getElementById('sidebar-filter') as HTMLInputElement;
+const sidebarList = document.getElementById('sidebar-list')!;
+
+// Claude metrics status bar
+const statusClaude = document.getElementById('status-claude')!;
+const statusModel = document.getElementById('status-model')!;
+const statusContextPct = document.getElementById('status-context-pct')!;
+const statusCost = document.getElementById('status-cost')!;
+const statusLines = document.getElementById('status-lines')!;
+const contextBarFill = document.querySelector('.context-bar-fill') as HTMLElement;
+
+// Analytics dashboard
+const dashboardOverlay = document.getElementById('dashboard-overlay')!;
+const dashCloseBtn = document.getElementById('dash-close-btn')!;
+const dashClearBtn = document.getElementById('dash-clear-btn')!;
+const dashTotalCost = document.getElementById('dash-total-cost')!;
+const dashTotalSessions = document.getElementById('dash-total-sessions')!;
+const dashTotalAdded = document.getElementById('dash-total-added')!;
+const dashTotalRemoved = document.getElementById('dash-total-removed')!;
+const dashWorkspaceTbody = document.getElementById('dash-workspace-tbody')!;
+const dashChart = document.getElementById('dash-chart')!;
+const dashOrgSection = document.getElementById('dash-org-section')!;
+const dashOrgContent = document.getElementById('dash-org-content')!;
+
 // ============================================
 // Terminal Factory
 // ============================================
 
-const TERMINAL_THEME = {
+const TERMINAL_THEME_DARK = {
   background: '#0D1117',
   foreground: '#E6EDF3',
   cursor: '#58A6FF',
@@ -141,15 +191,44 @@ const TERMINAL_THEME = {
   brightWhite: '#F0F6FC',
 };
 
+const TERMINAL_THEME_LIGHT = {
+  background: '#FFFFFF',
+  foreground: '#1F2328',
+  cursor: '#0969DA',
+  cursorAccent: '#FFFFFF',
+  selectionBackground: '#B6E3FF',
+  selectionForeground: '#1F2328',
+  black: '#1F2328',
+  red: '#CF222E',
+  green: '#1A7F37',
+  yellow: '#9A6700',
+  blue: '#0969DA',
+  magenta: '#8250DF',
+  cyan: '#0A6B5E',
+  white: '#6E7781',
+  brightBlack: '#57606A',
+  brightRed: '#A40E26',
+  brightGreen: '#116329',
+  brightYellow: '#7D4E00',
+  brightBlue: '#0550AE',
+  brightMagenta: '#6639BA',
+  brightCyan: '#096A5E',
+  brightWhite: '#8C959F',
+};
+
+function getTerminalTheme() {
+  return currentSettings.theme === 'light' ? TERMINAL_THEME_LIGHT : TERMINAL_THEME_DARK;
+}
+
 function createTerminal(): { terminal: Terminal; fitAddon: FitAddon; searchAddon: SearchAddon } {
   const terminal = new Terminal({
-    fontFamily: "'Cascadia Code', 'Consolas', 'JetBrains Mono', 'Fira Code', monospace",
-    fontSize: 14,
+    fontFamily: currentSettings.fontFamily,
+    fontSize: currentSettings.fontSize,
     lineHeight: 1.3,
     cursorBlink: true,
     cursorStyle: 'bar',
-    scrollback: 10000,
-    theme: TERMINAL_THEME,
+    scrollback: currentSettings.scrollbackLimit,
+    theme: getTerminalTheme(),
   });
 
   const fitAddon = new FitAddon();
@@ -311,6 +390,8 @@ function setupResizeHandle(handle: HTMLElement, split: PaneSplit, firstChildWrap
     document.removeEventListener('mouseup', onMouseUp);
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+    // Save layout after resize
+    if (activeTabId) savePaneLayout(activeTabId);
   };
 
   handle.addEventListener('mousedown', (e) => {
@@ -372,6 +453,52 @@ async function splitPane(workspaceId: string, direction: 'horizontal' | 'vertica
   // Spawn PTY for new pane
   await spawnPaneTerminal(workspaceId, newLeaf);
   setActivePane(workspaceId, newLeaf.id);
+
+  // Save layout after split
+  savePaneLayout(workspaceId);
+}
+
+// ============================================
+// Pane Layout Persistence
+// ============================================
+
+function serializePaneTree(node: PaneNode): SerializedPaneNode {
+  if (node.type === 'leaf') {
+    return { type: 'leaf', id: node.id };
+  }
+  return {
+    type: 'split',
+    direction: node.direction,
+    children: [serializePaneTree(node.children[0]), serializePaneTree(node.children[1])],
+    ratio: node.ratio,
+  };
+}
+
+function deserializePaneTree(node: SerializedPaneNode, workspaceId: string, tab: TabState): PaneNode {
+  if (node.type === 'leaf') {
+    // Extract pane index from id like "wsid:pane-3"
+    const match = node.id.match(/:pane-(\d+)$/);
+    const paneIndex = match ? parseInt(match[1], 10) : tab.paneCounter++;
+    if (paneIndex >= tab.paneCounter) tab.paneCounter = paneIndex + 1;
+    return createPaneLeaf(workspaceId, paneIndex);
+  }
+  const splitNode = node as SerializedPaneSplit;
+  const child0 = deserializePaneTree(splitNode.children[0], workspaceId, tab);
+  const child1 = deserializePaneTree(splitNode.children[1], workspaceId, tab);
+  return {
+    type: 'split',
+    direction: splitNode.direction,
+    children: [child0, child1],
+    ratio: splitNode.ratio,
+    container: document.createElement('div'),
+  };
+}
+
+function savePaneLayout(workspaceId: string): void {
+  const tab = tabs.get(workspaceId);
+  if (!tab) return;
+  const serialized = serializePaneTree(tab.paneRoot);
+  api.app.savePaneLayout(workspaceId, serialized);
 }
 
 function replacePaneInTree(tab: TabState, target: PaneNode, replacement: PaneNode): void {
@@ -420,6 +547,7 @@ function closePaneById(workspaceId: string, paneId: string): void {
     if (leaves.length > 0) {
       setActivePane(workspaceId, leaves[0].id);
     }
+    savePaneLayout(workspaceId);
   }
 }
 
@@ -463,6 +591,8 @@ function closeSplitDirection(workspaceId: string, direction: 'horizontal' | 'ver
   if (survivorLeaves.length > 0 && !survivorLeaves.find(l => l.id === tab.activePaneId)) {
     setActivePane(workspaceId, survivorLeaves[0].id);
   }
+
+  savePaneLayout(workspaceId);
 }
 
 function findParentSplit(node: PaneNode, target: PaneLeaf, direction: 'horizontal' | 'vertical'): PaneSplit | null {
@@ -507,7 +637,7 @@ function findSiblingInNode(tab: TabState, node: PaneNode, target: PaneLeaf): Pan
   return null;
 }
 
-async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf): Promise<void> {
+async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf, startupDelayMs = 600): Promise<void> {
   const tab = tabs.get(workspaceId);
   if (!tab) return;
 
@@ -541,7 +671,7 @@ async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf): Promise<v
 
   // Send startup command for main pane only (pane-0)
   if (pane.id.endsWith(':pane-0') && tab.workspace.startupCommand) {
-    api.pty.writeCommand(pane.id, tab.workspace.startupCommand, 600);
+    api.pty.writeCommand(pane.id, tab.workspace.startupCommand, startupDelayMs);
   }
 
   if (pane.resizeDisposable) pane.resizeDisposable.dispose();
@@ -551,21 +681,218 @@ async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf): Promise<v
 }
 
 // ============================================
+// Sidebar
+// ============================================
+
+function toggleSidebar(): void {
+  sidebarVisible = !sidebarVisible;
+  sidebar.classList.toggle('hidden', !sidebarVisible);
+  sidebarToggleBtn.classList.toggle('active', sidebarVisible);
+
+  // Refit terminals after sidebar transition
+  setTimeout(() => {
+    if (activeTabId) {
+      const tab = tabs.get(activeTabId);
+      if (tab) {
+        findAllLeaves(tab.paneRoot).forEach(leaf => {
+          try { leaf.fitAddon.fit(); } catch {}
+        });
+      }
+    }
+  }, 250);
+}
+
+function renderSidebar(): void {
+  const filterText = sidebarFilter.value.trim().toLowerCase();
+  sidebarList.innerHTML = '';
+
+  // Group workspaces
+  const grouped = new Map<string, Workspace[]>();
+  const ungrouped: Workspace[] = [];
+
+  for (const ws of allWorkspaces) {
+    // Apply filter
+    if (filterText && !ws.name.toLowerCase().includes(filterText) && !ws.cwd.toLowerCase().includes(filterText)) {
+      continue;
+    }
+    if (ws.group) {
+      if (!grouped.has(ws.group)) grouped.set(ws.group, []);
+      grouped.get(ws.group)!.push(ws);
+    } else {
+      ungrouped.push(ws);
+    }
+  }
+
+  // Render grouped
+  for (const [groupName, workspaces] of grouped) {
+    const isCollapsed = groupStates.get(groupName) || false;
+
+    const header = document.createElement('div');
+    header.className = 'sidebar-group-header';
+
+    const chevron = document.createElement('span');
+    chevron.className = `group-chevron${isCollapsed ? ' collapsed' : ''}`;
+    chevron.textContent = '\u25BC';
+
+    const label = document.createElement('span');
+    label.textContent = groupName;
+
+    header.appendChild(chevron);
+    header.appendChild(label);
+    header.addEventListener('click', () => {
+      api.workspace.toggleGroup(groupName).then((g: WorkspaceGroup) => {
+        groupStates.set(groupName, g.collapsed);
+        renderSidebar();
+        renderTabBar();
+      });
+    });
+
+    sidebarList.appendChild(header);
+
+    if (!isCollapsed) {
+      for (const ws of workspaces) {
+        sidebarList.appendChild(createSidebarItem(ws));
+      }
+    }
+  }
+
+  // Render ungrouped
+  for (const ws of ungrouped) {
+    sidebarList.appendChild(createSidebarItem(ws));
+  }
+
+  // Empty message
+  if (sidebarList.children.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'padding: 20px 12px; text-align: center; color: var(--text-muted); font-size: 12px;';
+    empty.textContent = filterText ? 'No matching workspaces' : 'No workspaces yet';
+    sidebarList.appendChild(empty);
+  }
+}
+
+function createSidebarItem(ws: Workspace): HTMLDivElement {
+  const isOpen = tabs.has(ws.id);
+  const isActive = ws.id === activeTabId;
+
+  const item = document.createElement('div');
+  item.className = `sidebar-item${isActive ? ' active' : ''}${!isOpen ? ' closed' : ''}`;
+  item.dataset.id = ws.id;
+
+  const dot = document.createElement('span');
+  dot.className = `sidebar-item-dot${isOpen ? ' open' : ''}`;
+  dot.style.color = ws.color;
+  dot.style.background = ws.color;
+
+  const name = document.createElement('span');
+  name.className = 'sidebar-item-name';
+  name.textContent = ws.name;
+
+  const actions = document.createElement('span');
+  actions.className = 'sidebar-item-actions';
+
+  const editBtn = document.createElement('button');
+  editBtn.className = 'sidebar-item-action';
+  editBtn.title = 'Edit';
+  editBtn.innerHTML = '&#9998;'; // ✎ pencil
+  editBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openEditModalForWorkspace(ws);
+  });
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'sidebar-item-action danger';
+  deleteBtn.title = 'Delete';
+  deleteBtn.innerHTML = '&#128465;'; // 🗑 trash
+  deleteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    deleteSidebarWorkspace(ws);
+  });
+
+  actions.appendChild(editBtn);
+  actions.appendChild(deleteBtn);
+
+  item.appendChild(dot);
+  item.appendChild(name);
+  item.appendChild(actions);
+
+  // Click to open or switch to workspace
+  item.addEventListener('click', () => {
+    openWorkspaceFromSidebar(ws);
+  });
+
+  return item;
+}
+
+function openWorkspaceFromSidebar(ws: Workspace): void {
+  if (tabs.has(ws.id)) {
+    // Already open — switch to it
+    activateTab(ws.id);
+  } else {
+    // Open as new tab
+    addWorkspaceTab(ws).then(() => {
+      activateTab(ws.id);
+      renderSidebar();
+    });
+  }
+}
+
+function openEditModalForWorkspace(ws: Workspace): void {
+  editingWorkspaceId = ws.id;
+  modalTitle.textContent = 'Edit Workspace';
+  wsNameInput.value = ws.name;
+  wsCwdInput.value = ws.cwd;
+  wsCommandInput.value = ws.startupCommand || '';
+  wsAutostartInput.checked = ws.autoStart;
+  wsAutorestartInput.checked = ws.autoRestart || false;
+  wsMaxRestartsInput.value = String(ws.maxRestarts || 3);
+  maxRestartsGroup.style.display = ws.autoRestart ? '' : 'none';
+  wsGroupInput.value = ws.group || '';
+  templateGroup.style.display = 'none';
+  selectedColor = ws.color;
+  initColorPicker();
+  modalOverlay.classList.remove('hidden');
+  wsNameInput.focus();
+}
+
+async function deleteSidebarWorkspace(ws: Workspace): Promise<void> {
+  const confirmed = confirm(`Delete workspace "${ws.name}"? This removes it permanently.`);
+  if (!confirmed) return;
+
+  // Close tab if open
+  if (tabs.has(ws.id)) {
+    closeTab(ws.id);
+  }
+
+  await api.workspace.delete(ws.id);
+
+  // Remove from allWorkspaces
+  allWorkspaces = allWorkspaces.filter(w => w.id !== ws.id);
+  renderSidebar();
+  updateEmptyState();
+}
+
+// ============================================
 // Tab Management
 // ============================================
 
 function createTabElement(workspace: Workspace): HTMLDivElement {
   const tab = document.createElement('div');
-  tab.className = 'tab';
+  tab.className = `tab${workspace.pinned ? ' pinned' : ''}`;
   tab.dataset.id = workspace.id;
 
-  // #6: Drag-and-drop
-  tab.draggable = true;
+  // #6: Drag-and-drop (disabled for pinned tabs)
+  tab.draggable = !workspace.pinned;
 
   const dot = document.createElement('span');
   dot.className = 'tab-dot';
   dot.style.color = workspace.color;
   dot.style.background = workspace.color;
+
+  // Pin icon (visible only when pinned)
+  const pinIcon = document.createElement('span');
+  pinIcon.className = 'tab-pin-icon';
+  pinIcon.textContent = '\uD83D\uDCCC'; // 📌
+  pinIcon.style.display = workspace.pinned ? '' : 'none';
 
   const name = document.createElement('span');
   name.className = 'tab-name';
@@ -577,6 +904,7 @@ function createTabElement(workspace: Workspace): HTMLDivElement {
   closeBtn.title = 'Close workspace';
 
   tab.appendChild(dot);
+  tab.appendChild(pinIcon);
   tab.appendChild(name);
   tab.appendChild(closeBtn);
 
@@ -586,9 +914,12 @@ function createTabElement(workspace: Workspace): HTMLDivElement {
     activateTab(workspace.id);
   });
 
-  // Close button
+  // Close button (confirm for pinned tabs)
   closeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (workspace.pinned) {
+      if (!confirm(`"${workspace.name}" is pinned. Close anyway?`)) return;
+    }
     closeTab(workspace.id);
   });
 
@@ -645,9 +976,7 @@ function persistTabOrder(): void {
   api.workspace.reorder(ids);
 }
 
-async function addWorkspaceTab(workspace: Workspace, autoSpawn = true): Promise<void> {
-  const paneLeaf = createPaneLeaf(workspace.id, 0);
-
+async function addWorkspaceTab(workspace: Workspace, autoSpawn = true, startupDelayMs = 600): Promise<void> {
   // Create wrapper container for this tab's panes
   const wrapper = document.createElement('div');
   wrapper.className = 'terminal-wrapper';
@@ -656,8 +985,8 @@ async function addWorkspaceTab(workspace: Workspace, autoSpawn = true): Promise<
 
   const tabState: TabState = {
     workspace,
-    paneRoot: paneLeaf,
-    activePaneId: paneLeaf.id,
+    paneRoot: null as any, // will be set below
+    activePaneId: '',
     paneCounter: 0,
     hasUnread: false,
     unreadCount: 0,
@@ -667,30 +996,62 @@ async function addWorkspaceTab(workspace: Workspace, autoSpawn = true): Promise<
 
   tabs.set(workspace.id, tabState);
 
-  // Render pane tree (just the single leaf initially)
-  renderPaneTree(paneLeaf, wrapper);
-
-  // Open terminal in pane container
-  paneLeaf.terminal.open(paneLeaf.container);
-  paneLeaf.container.classList.add('active-pane');
-
-  // Fit terminal
-  requestAnimationFrame(() => {
-    paneLeaf.fitAddon.fit();
-  });
-
-  // #1: Restore scrollback
+  // Try to restore saved pane layout
+  let restoredLayout: SerializedPaneNode | null = null;
   try {
-    const scrollback = await api.app.loadScrollback(workspace.id);
-    if (scrollback) {
-      paneLeaf.terminal.write(scrollback);
-      paneLeaf.terminal.writeln('\r\n\x1b[90m--- Previous session restored ---\x1b[0m\r\n');
-    }
+    restoredLayout = await api.app.loadPaneLayout(workspace.id);
   } catch {}
 
-  // Spawn PTY
+  let rootNode: PaneNode;
+  if (restoredLayout && restoredLayout.type === 'split') {
+    rootNode = deserializePaneTree(restoredLayout, workspace.id, tabState);
+  } else {
+    rootNode = createPaneLeaf(workspace.id, 0);
+    tabState.paneCounter = 1;
+  }
+
+  tabState.paneRoot = rootNode;
+  const allLeaves = findAllLeaves(rootNode);
+  tabState.activePaneId = allLeaves[0]?.id || '';
+
+  // Render pane tree
+  renderPaneTree(rootNode, wrapper);
+
+  // Open terminals and restore scrollback per-pane
+  for (const leaf of allLeaves) {
+    leaf.terminal.open(leaf.container);
+
+    // Load per-pane scrollback
+    try {
+      const scrollback = await api.app.loadScrollback(leaf.id);
+      if (scrollback) {
+        leaf.terminal.write(scrollback);
+        leaf.terminal.writeln('\r\n\x1b[90m--- Previous session restored ---\x1b[0m\r\n');
+      } else if (leaf.id.endsWith(':pane-0')) {
+        // Backward compat: try legacy key (workspaceId without pane suffix)
+        const legacyScrollback = await api.app.loadScrollback(workspace.id);
+        if (legacyScrollback) {
+          leaf.terminal.write(legacyScrollback);
+          leaf.terminal.writeln('\r\n\x1b[90m--- Previous session restored ---\x1b[0m\r\n');
+        }
+      }
+    } catch {}
+  }
+
+  allLeaves[0]?.container.classList.add('active-pane');
+
+  // Fit all terminals
+  requestAnimationFrame(() => {
+    allLeaves.forEach(leaf => {
+      try { leaf.fitAddon.fit(); } catch {}
+    });
+  });
+
+  // Spawn PTYs for all panes
   if (autoSpawn) {
-    await spawnPaneTerminal(workspace.id, paneLeaf);
+    for (const leaf of allLeaves) {
+      await spawnPaneTerminal(workspace.id, leaf, startupDelayMs);
+    }
   }
 
   // Render tab bar (with groups)
@@ -747,6 +1108,7 @@ function activateTab(workspaceId: string): void {
   tabEl?.classList.add('active');
 
   api.app.setActiveTab(workspaceId);
+  renderSidebar();
 }
 
 function closeTab(workspaceId: string): void {
@@ -756,10 +1118,15 @@ function closeTab(workspaceId: string): void {
   // #1: Save scrollback before closing
   saveScrollbackForTab(tab);
 
-  // Kill all PTYs for this tab's panes
+  // Kill all PTYs for this tab's panes and clean up notification timers
   findAllLeaves(tab.paneRoot).forEach(leaf => {
     api.pty.kill(leaf.id);
     leaf.terminal.dispose();
+    const timer = paneIdleTimers.get(leaf.id);
+    if (timer) {
+      clearTimeout(timer);
+      paneIdleTimers.delete(leaf.id);
+    }
   });
 
   // Remove DOM
@@ -782,17 +1149,24 @@ function closeTab(workspaceId: string): void {
 
   renderTabBar();
   updateEmptyState();
+  renderSidebar();
 }
 
 async function deleteWorkspaceWithConfirm(workspaceId: string): Promise<void> {
   const tab = tabs.get(workspaceId);
-  if (!tab) return;
+  const ws = allWorkspaces.find(w => w.id === workspaceId);
+  const name = tab?.workspace.name || ws?.name || workspaceId;
 
-  const confirmed = confirm(`Delete workspace "${tab.workspace.name}"? This removes it permanently.`);
+  const confirmed = confirm(`Delete workspace "${name}"? This removes it permanently.`);
   if (!confirmed) return;
 
-  closeTab(workspaceId);
+  if (tabs.has(workspaceId)) {
+    closeTab(workspaceId);
+  }
   await api.workspace.delete(workspaceId);
+  allWorkspaces = allWorkspaces.filter(w => w.id !== workspaceId);
+  renderSidebar();
+  updateEmptyState();
 }
 
 function updateTabStatus(workspaceId: string): void {
@@ -823,6 +1197,7 @@ function updateStatusBar(tab: TabState | null): void {
     statusText.textContent = 'Ready';
     statusCwd.textContent = '';
     statusShell.textContent = '';
+    updateClaudeMetricsDisplay(null);
     return;
   }
 
@@ -840,11 +1215,34 @@ function updateStatusBar(tab: TabState | null): void {
   statusText.textContent = statusLabels[status];
   statusCwd.textContent = tab.workspace.cwd;
   statusShell.textContent = tab.workspace.shell || 'powershell.exe';
+
+  // Update Claude metrics display for this tab
+  const metrics = claudeMetrics.get(tab.workspace.id) || null;
+  updateClaudeMetricsDisplay(metrics);
 }
 
 function updateEmptyState(): void {
-  emptyState.classList.toggle('hidden', tabs.size > 0);
-  terminalContainer.style.display = tabs.size > 0 ? '' : 'none';
+  const hasOpenTabs = tabs.size > 0;
+  const hasAnyWorkspaces = allWorkspaces.length > 0;
+
+  emptyState.classList.toggle('hidden', hasOpenTabs);
+  terminalContainer.style.display = hasOpenTabs ? '' : 'none';
+
+  // Update empty state message based on context
+  const emptyContent = emptyState.querySelector('.empty-content');
+  if (emptyContent) {
+    const h2 = emptyContent.querySelector('h2');
+    const p = emptyContent.querySelector('p');
+    if (h2 && p) {
+      if (!hasAnyWorkspaces) {
+        h2.textContent = 'No workspaces yet';
+        p.textContent = 'Create a workspace to get started with Claude Code';
+      } else {
+        h2.textContent = 'No open workspaces';
+        p.textContent = 'Click a workspace in the sidebar or create a new one';
+      }
+    }
+  }
 }
 
 // #4: Unread Badge
@@ -887,8 +1285,16 @@ function renderTabBar(): void {
     }
   }
 
+  // Sort pinned first within each group
+  const sortPinnedFirst = (a: Workspace, b: Workspace) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return 0;
+  };
+
   // Render grouped tabs
   for (const [groupName, workspaces] of grouped) {
+    workspaces.sort(sortPinnedFirst);
     const isCollapsed = groupStates.get(groupName) || false;
 
     const header = document.createElement('div');
@@ -924,7 +1330,8 @@ function renderTabBar(): void {
     tabList.appendChild(tabContainer);
   }
 
-  // Render ungrouped tabs
+  // Render ungrouped tabs (pinned first)
+  ungrouped.sort(sortPinnedFirst);
   for (const ws of ungrouped) {
     const tabEl = createTabElement(ws);
     if (ws.id === activeTabId) tabEl.classList.add('active');
@@ -958,11 +1365,11 @@ function serializeTerminalBuffer(terminal: Terminal): string {
 }
 
 function saveScrollbackForTab(tab: TabState): void {
-  const mainPane = findPaneById(tab.paneRoot, `${tab.workspace.id}:pane-0`);
-  if (mainPane && mainPane.type === 'leaf') {
-    const content = serializeTerminalBuffer(mainPane.terminal);
+  const leaves = findAllLeaves(tab.paneRoot);
+  for (const leaf of leaves) {
+    const content = serializeTerminalBuffer(leaf.terminal);
     if (content.length > 0) {
-      api.app.saveScrollback(tab.workspace.id, content);
+      api.app.saveScrollback(leaf.id, content);
     }
   }
 }
@@ -981,11 +1388,16 @@ function showContextMenu(x: number, y: number, workspaceId: string): void {
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
+  const tabState = tabs.get(workspaceId);
+  const isPinned = tabState?.workspace.pinned;
+
   const items = [
     { label: 'Edit Workspace', action: () => openEditModal(workspaceId) },
+    { label: isPinned ? 'Unpin Tab' : 'Pin Tab', action: () => togglePin(workspaceId) },
     { label: 'Restart Terminal', shortcut: 'Ctrl+Shift+R', action: () => restartTerminal(workspaceId) },
     // #8: Save as template
     { label: 'Save as Template', action: () => saveAsTemplate(workspaceId) },
+    { label: 'Duplicate Tab', action: () => duplicateTab(workspaceId) },
     { separator: true },
     // #2: Split pane options
     { label: 'Split Down', shortcut: 'Ctrl+Shift+D', action: () => splitPane(workspaceId, 'vertical') },
@@ -1141,23 +1553,9 @@ function openNewModal(): void {
 
 function openEditModal(workspaceId: string): void {
   const tab = tabs.get(workspaceId);
-  if (!tab) return;
-
-  editingWorkspaceId = workspaceId;
-  modalTitle.textContent = 'Edit Workspace';
-  wsNameInput.value = tab.workspace.name;
-  wsCwdInput.value = tab.workspace.cwd;
-  wsCommandInput.value = tab.workspace.startupCommand || '';
-  wsAutostartInput.checked = tab.workspace.autoStart;
-  wsAutorestartInput.checked = tab.workspace.autoRestart || false;
-  wsMaxRestartsInput.value = String(tab.workspace.maxRestarts || 3);
-  maxRestartsGroup.style.display = tab.workspace.autoRestart ? '' : 'none';
-  wsGroupInput.value = tab.workspace.group || '';
-  templateGroup.style.display = 'none'; // Hide template picker when editing
-  selectedColor = tab.workspace.color;
-  initColorPicker();
-  modalOverlay.classList.remove('hidden');
-  wsNameInput.focus();
+  const ws = tab?.workspace || allWorkspaces.find(w => w.id === workspaceId);
+  if (!ws) return;
+  openEditModalForWorkspace(ws);
 }
 
 function closeModal(): void {
@@ -1193,12 +1591,18 @@ async function saveModal(): Promise<void> {
     });
 
     if (updated) {
+      // Update in open tab if present
       const tab = tabs.get(editingWorkspaceId);
       if (tab) {
         tab.workspace = updated;
         if (activeTabId === editingWorkspaceId) {
           updateStatusBar(tab);
         }
+      }
+      // Update in allWorkspaces
+      const idx = allWorkspaces.findIndex(w => w.id === editingWorkspaceId);
+      if (idx >= 0) {
+        allWorkspaces[idx] = updated;
       }
     }
   } else {
@@ -1213,12 +1617,14 @@ async function saveModal(): Promise<void> {
       group: group || undefined,
     });
 
+    allWorkspaces.push(workspace);
     await addWorkspaceTab(workspace);
     activateTab(workspace.id);
   }
 
   closeModal();
   renderTabBar();
+  renderSidebar();
 }
 
 async function restartTerminal(workspaceId: string): Promise<void> {
@@ -1348,17 +1754,22 @@ function fuzzyMatch(query: string, text: string): { match: boolean; score: numbe
 }
 
 function renderQuickSwitcherResults(query: string): void {
-  const allTabs = Array.from(tabs.values());
-  const results = allTabs
-    .map(tab => {
-      const nameMatch = fuzzyMatch(query, tab.workspace.name);
-      const cwdMatch = fuzzyMatch(query, tab.workspace.cwd);
+  // Show ALL workspaces (open and closed), not just open tabs
+  const results = allWorkspaces
+    .map(ws => {
+      const nameMatch = fuzzyMatch(query, ws.name);
+      const cwdMatch = fuzzyMatch(query, ws.cwd);
       const bestScore = Math.max(nameMatch.score, cwdMatch.score);
       const isMatch = nameMatch.match || cwdMatch.match;
-      return { tab, score: bestScore, match: isMatch };
+      const isOpen = tabs.has(ws.id);
+      return { workspace: ws, score: bestScore, match: isMatch, isOpen };
     })
     .filter(r => r.match)
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => {
+      // Open workspaces first, then by score
+      if (a.isOpen !== b.isOpen) return a.isOpen ? -1 : 1;
+      return b.score - a.score;
+    });
 
   qsResults.innerHTML = '';
 
@@ -1378,22 +1789,35 @@ function renderQuickSwitcherResults(query: string): void {
 
     const dot = document.createElement('span');
     dot.className = 'qs-item-dot';
-    dot.style.background = result.tab.workspace.color;
+    dot.style.background = result.workspace.color;
+    if (!result.isOpen) {
+      dot.style.opacity = '0.4';
+    }
 
     const name = document.createElement('span');
     name.className = 'qs-item-name';
-    name.textContent = result.tab.workspace.name;
+    name.textContent = result.workspace.name;
+    if (!result.isOpen) {
+      name.style.color = 'var(--text-muted)';
+    }
 
     const cwd = document.createElement('span');
     cwd.className = 'qs-item-cwd';
-    cwd.textContent = result.tab.workspace.cwd;
+    cwd.textContent = result.workspace.cwd;
 
     item.appendChild(dot);
     item.appendChild(name);
     item.appendChild(cwd);
 
     item.addEventListener('click', () => {
-      activateTab(result.tab.workspace.id);
+      if (result.isOpen) {
+        activateTab(result.workspace.id);
+      } else {
+        addWorkspaceTab(result.workspace).then(() => {
+          activateTab(result.workspace.id);
+          renderSidebar();
+        });
+      }
       closeQuickSwitcher();
     });
 
@@ -1412,6 +1836,381 @@ function quickSwitcherSelectCurrent(): void {
   if (qsSelectedIndex >= 0 && qsSelectedIndex < items.length) {
     (items[qsSelectedIndex] as HTMLElement).click();
   }
+}
+
+// ============================================
+// Tab Pinning
+// ============================================
+
+async function togglePin(workspaceId: string): Promise<void> {
+  const tab = tabs.get(workspaceId);
+  if (!tab) return;
+  const newPinned = !tab.workspace.pinned;
+  await api.workspace.update(workspaceId, { pinned: newPinned });
+  tab.workspace.pinned = newPinned;
+  renderTabBar();
+}
+
+// ============================================
+// Duplicate Tab
+// ============================================
+
+async function duplicateTab(workspaceId: string): Promise<void> {
+  const tab = tabs.get(workspaceId);
+  if (!tab) return;
+  const ws = tab.workspace;
+  const newWs = await api.workspace.create({
+    name: ws.name + ' (copy)',
+    cwd: ws.cwd,
+    startupCommand: ws.startupCommand,
+    autoStart: ws.autoStart,
+    color: ws.color,
+    env: ws.env,
+    shell: ws.shell,
+    autoRestart: ws.autoRestart,
+    maxRestarts: ws.maxRestarts,
+    group: ws.group,
+  });
+  await addWorkspaceTab(newWs);
+  activateTab(newWs.id);
+}
+
+// ============================================
+// Claude Code Metrics Display
+// ============================================
+
+function updateClaudeMetricsDisplay(entry: ClaudeMetricsEntry | null): void {
+  if (!entry || !entry.metrics) {
+    statusClaude.classList.add('hidden');
+    return;
+  }
+
+  const m = entry.metrics;
+  statusClaude.classList.remove('hidden');
+
+  // Model name (shorten for display)
+  const modelShort = m.model
+    ? m.model.replace('claude-', '').replace(/-\d{8}$/, '')
+    : '';
+  statusModel.textContent = modelShort;
+
+  // Context usage bar
+  const pct = m.context_used_percent || 0;
+  contextBarFill.style.width = `${Math.min(pct, 100)}%`;
+  contextBarFill.className = 'context-bar-fill ' +
+    (pct < 50 ? 'low' : pct < 80 ? 'medium' : 'high');
+  statusContextPct.textContent = `${Math.round(pct)}%`;
+
+  // Cost
+  const cost = m.cost_usd || 0;
+  statusCost.textContent = `$${cost.toFixed(2)}`;
+
+  // Lines changed
+  const added = m.lines_added || 0;
+  const removed = m.lines_removed || 0;
+  statusLines.textContent = `+${added} -${removed}`;
+}
+
+// ============================================
+// Analytics Dashboard
+// ============================================
+
+async function openDashboard(): Promise<void> {
+  dashboardOverlay.classList.remove('hidden');
+
+  try {
+    const analytics = await api.claude.getAnalytics();
+    populateDashboard(analytics);
+  } catch {
+    dashTotalCost.textContent = '$0.00';
+    dashTotalSessions.textContent = '0';
+    dashTotalAdded.textContent = '0';
+    dashTotalRemoved.textContent = '0';
+    dashWorkspaceTbody.innerHTML = '';
+    dashChart.innerHTML = '<div class="dash-empty">No metrics data</div>';
+  }
+
+  // Phase 4: If API is enabled, load org usage
+  try {
+    const apiConfig = await api.anthropic.getConfig();
+    if (apiConfig.enabled && apiConfig.apiKey) {
+      dashOrgSection.style.display = '';
+      const usage = await api.anthropic.getUsage(apiConfig.apiKey);
+      if ('error' in usage) {
+        dashOrgContent.textContent = `Error: ${usage.error}`;
+      } else {
+        dashOrgContent.innerHTML = `
+          <div class="dash-cards" style="grid-template-columns: repeat(3, 1fr);">
+            <div class="dash-card">
+              <div class="dash-card-label">Org Cost</div>
+              <div class="dash-card-value">$${usage.total_cost_usd.toFixed(2)}</div>
+            </div>
+            <div class="dash-card">
+              <div class="dash-card-label">Input Tokens</div>
+              <div class="dash-card-value">${formatTokens(usage.total_input_tokens)}</div>
+            </div>
+            <div class="dash-card">
+              <div class="dash-card-label">Output Tokens</div>
+              <div class="dash-card-value">${formatTokens(usage.total_output_tokens)}</div>
+            </div>
+          </div>
+          ${usage.models.length > 0 ? `
+            <table id="dash-workspace-table" style="margin-top: 12px;">
+              <thead><tr><th>Model</th><th>Cost</th><th>Input</th><th>Output</th></tr></thead>
+              <tbody>${usage.models.map(m => `
+                <tr><td>${m.model}</td><td>$${m.cost_usd.toFixed(2)}</td><td>${formatTokens(m.input_tokens)}</td><td>${formatTokens(m.output_tokens)}</td></tr>
+              `).join('')}</tbody>
+            </table>
+          ` : ''}
+        `;
+      }
+    } else {
+      dashOrgSection.style.display = 'none';
+    }
+  } catch {
+    dashOrgSection.style.display = 'none';
+  }
+}
+
+function closeDashboard(): void {
+  dashboardOverlay.classList.add('hidden');
+}
+
+function populateDashboard(analytics: ClaudeAnalytics): void {
+  const { totals, perWorkspace, history } = analytics;
+
+  // Summary cards
+  dashTotalCost.textContent = `$${totals.cost_usd.toFixed(2)}`;
+  dashTotalSessions.textContent = String(totals.sessions);
+  dashTotalAdded.textContent = `+${totals.lines_added}`;
+  dashTotalRemoved.textContent = `-${totals.lines_removed}`;
+
+  // Per-workspace table
+  if (perWorkspace.length === 0) {
+    dashWorkspaceTbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-muted);">No data</td></tr>';
+  } else {
+    dashWorkspaceTbody.innerHTML = perWorkspace.map(ws => {
+      const lastActive = ws.lastActive
+        ? new Date(ws.lastActive).toLocaleDateString()
+        : '-';
+      const modelShort = ws.model
+        ? ws.model.replace('claude-', '').replace(/-\d{8}$/, '')
+        : '-';
+      return `<tr>
+        <td>${escapeHtml(ws.name)}</td>
+        <td>$${ws.cost_usd.toFixed(2)}</td>
+        <td>${ws.sessions}</td>
+        <td>${modelShort}</td>
+        <td>${lastActive}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Cost chart
+  renderCostChart(history);
+}
+
+function renderCostChart(history: ClaudeAnalytics['history']): void {
+  if (history.length === 0) {
+    dashChart.innerHTML = '<div class="dash-empty">No cost history</div>';
+    return;
+  }
+
+  const maxCost = Math.max(...history.map(h => h.cost_usd), 0.01);
+  dashChart.innerHTML = '';
+
+  for (const entry of history) {
+    const bar = document.createElement('div');
+    bar.className = 'dash-chart-bar';
+    const heightPct = Math.max((entry.cost_usd / maxCost) * 100, 2);
+    bar.style.height = `${heightPct}%`;
+    bar.title = `${entry.date}: $${entry.cost_usd.toFixed(2)}`;
+    dashChart.appendChild(bar);
+  }
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+function escapeHtml(s: string): string {
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+dashCloseBtn.addEventListener('click', closeDashboard);
+dashClearBtn.addEventListener('click', async () => {
+  if (confirm('Clear all Claude metrics data? This cannot be undone.')) {
+    await api.claude.clearAnalytics();
+    claudeMetrics.clear();
+    const tab = activeTabId ? tabs.get(activeTabId) : null;
+    if (tab) updateClaudeMetricsDisplay(null);
+    openDashboard(); // Refresh with empty data
+  }
+});
+dashboardOverlay.addEventListener('click', (e) => {
+  if (e.target === dashboardOverlay) closeDashboard();
+});
+dashboardOverlay.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeDashboard();
+});
+
+// ============================================
+// Settings Panel
+// ============================================
+
+const settingsOverlay = document.getElementById('settings-overlay')!;
+const setFontSizeInput = document.getElementById('set-font-size') as HTMLInputElement;
+const setFontFamilyInput = document.getElementById('set-font-family') as HTMLInputElement;
+const setDefaultShellInput = document.getElementById('set-default-shell') as HTMLInputElement;
+const setScrollbackInput = document.getElementById('set-scrollback') as HTMLInputElement;
+const setThemeSelect = document.getElementById('set-theme') as HTMLSelectElement;
+const setNotifyIdleInput = document.getElementById('set-notify-idle') as HTMLInputElement;
+const setNotifyDelayInput = document.getElementById('set-notify-delay') as HTMLInputElement;
+const settingsCancelBtn = document.getElementById('settings-cancel')!;
+const settingsSaveBtn = document.getElementById('settings-save')!;
+
+// Phase 4: API settings elements
+const setApiKeyInput = document.getElementById('set-api-key') as HTMLInputElement;
+const setApiTestBtn = document.getElementById('set-api-test')!;
+const setApiStatus = document.getElementById('set-api-status')!;
+const setApiOrgInput = document.getElementById('set-api-org') as HTMLInputElement;
+const setApiEnabledInput = document.getElementById('set-api-enabled') as HTMLInputElement;
+
+async function openSettings(): Promise<void> {
+  setFontSizeInput.value = String(currentSettings.fontSize);
+  setFontFamilyInput.value = currentSettings.fontFamily;
+  setDefaultShellInput.value = currentSettings.defaultShell;
+  setScrollbackInput.value = String(currentSettings.scrollbackLimit);
+  setThemeSelect.value = currentSettings.theme;
+  setNotifyIdleInput.checked = currentSettings.notifyOnIdle;
+  setNotifyDelayInput.value = String(currentSettings.notifyDelaySeconds);
+
+  // Phase 4: Load API config
+  try {
+    const apiConfig = await api.anthropic.getConfig();
+    setApiKeyInput.value = apiConfig.apiKey || '';
+    setApiOrgInput.value = apiConfig.orgId || '';
+    setApiEnabledInput.checked = apiConfig.enabled || false;
+    setApiStatus.textContent = '';
+    setApiStatus.className = 'settings-api-status';
+  } catch {}
+
+  settingsOverlay.classList.remove('hidden');
+  setFontSizeInput.focus();
+}
+
+function closeSettings(): void {
+  settingsOverlay.classList.add('hidden');
+}
+
+async function saveSettings(): Promise<void> {
+  const updates: Partial<AppSettings> = {
+    fontSize: parseInt(setFontSizeInput.value) || 14,
+    fontFamily: setFontFamilyInput.value.trim() || currentSettings.fontFamily,
+    defaultShell: setDefaultShellInput.value.trim() || currentSettings.defaultShell,
+    scrollbackLimit: parseInt(setScrollbackInput.value) || 10000,
+    theme: setThemeSelect.value as 'dark' | 'light',
+    notifyOnIdle: setNotifyIdleInput.checked,
+    notifyDelaySeconds: parseInt(setNotifyDelayInput.value) || 5,
+  };
+  currentSettings = await api.app.updateSettings(updates);
+
+  // Phase 4: Save API config
+  try {
+    const apiKey = setApiKeyInput.value.trim();
+    await api.anthropic.setConfig({
+      apiKey,
+      orgId: setApiOrgInput.value.trim(),
+      enabled: setApiEnabledInput.checked,
+    });
+  } catch {}
+
+  applySettings();
+  closeSettings();
+}
+
+function applySettings(): void {
+  // Apply theme
+  applyTheme(currentSettings.theme);
+
+  // Update all terminal instances
+  for (const tab of tabs.values()) {
+    const leaves = findAllLeaves(tab.paneRoot);
+    for (const leaf of leaves) {
+      leaf.terminal.options.fontSize = currentSettings.fontSize;
+      leaf.terminal.options.fontFamily = currentSettings.fontFamily;
+      leaf.terminal.options.scrollback = currentSettings.scrollbackLimit;
+      leaf.terminal.options.theme = getTerminalTheme();
+      try { leaf.fitAddon.fit(); } catch {}
+    }
+  }
+}
+
+function applyTheme(theme: 'dark' | 'light'): void {
+  document.body.setAttribute('data-theme', theme);
+}
+
+settingsCancelBtn.addEventListener('click', closeSettings);
+settingsSaveBtn.addEventListener('click', saveSettings);
+settingsOverlay.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeSettings();
+  if (e.key === 'Enter' && !e.shiftKey) saveSettings();
+});
+
+// Phase 4: API test button
+setApiTestBtn.addEventListener('click', async () => {
+  const apiKey = setApiKeyInput.value.trim();
+  if (!apiKey) {
+    setApiStatus.textContent = 'Enter an API key first';
+    setApiStatus.className = 'settings-api-status error';
+    return;
+  }
+  setApiStatus.textContent = 'Testing...';
+  setApiStatus.className = 'settings-api-status';
+  const result = await api.anthropic.testConnection(apiKey);
+  if (result.success) {
+    setApiStatus.textContent = 'Connection successful';
+    setApiStatus.className = 'settings-api-status success';
+  } else {
+    setApiStatus.textContent = result.error || 'Connection failed';
+    setApiStatus.className = 'settings-api-status error';
+  }
+});
+
+// ============================================
+// Notification on Command Completion
+// ============================================
+
+window.addEventListener('focus', () => { windowIsFocused = true; });
+window.addEventListener('blur', () => { windowIsFocused = false; });
+
+function trackPaneActivity(paneId: string, workspaceName: string): void {
+  // Clear existing timer for this pane
+  const existing = paneIdleTimers.get(paneId);
+  if (existing) clearTimeout(existing);
+
+  // Only track if notifications are enabled and window is blurred
+  if (!currentSettings.notifyOnIdle || windowIsFocused) return;
+
+  // Set a new idle timer
+  const timer = setTimeout(() => {
+    paneIdleTimers.delete(paneId);
+    showIdleNotification(workspaceName);
+  }, currentSettings.notifyDelaySeconds * 1000);
+  paneIdleTimers.set(paneId, timer);
+}
+
+function showIdleNotification(workspaceName: string): void {
+  if (windowIsFocused) return;
+  try {
+    new Notification('KiteTerm', {
+      body: `Command completed in "${workspaceName}"`,
+    });
+  } catch {}
 }
 
 // ============================================
@@ -1459,6 +2258,9 @@ function setupIpcListeners(): void {
           tab.unreadCount++;
           updateTabBadge(tabId);
         }
+
+        // Notification on command completion: track activity
+        trackPaneActivity(workspaceId, tab.workspace.name);
         return;
       }
     }
@@ -1516,7 +2318,13 @@ function setupIpcListeners(): void {
 
   // Shortcuts from main process
   api.shortcuts.onNewWorkspace(() => openNewModal());
-  api.shortcuts.onCloseTab(() => { if (activeTabId) closeTab(activeTabId); });
+  api.shortcuts.onCloseTab(() => {
+    if (activeTabId) {
+      const tab = tabs.get(activeTabId);
+      if (tab?.workspace.pinned) return; // Skip pinned tabs on Ctrl+W
+      closeTab(activeTabId);
+    }
+  });
   api.shortcuts.onNextTab(() => cycleTab(1));
   api.shortcuts.onPrevTab(() => cycleTab(-1));
   api.shortcuts.onGoToTab((index) => goToTabByIndex(index));
@@ -1548,10 +2356,52 @@ function setupIpcListeners(): void {
   api.shortcuts.onExportConfig(() => exportConfig());
   api.shortcuts.onImportConfig(() => importConfig());
 
+  // Sidebar toggle
+  api.shortcuts.onToggleSidebar(() => toggleSidebar());
+
+  // Settings
+  api.shortcuts.onSettings(() => {
+    if (settingsOverlay.classList.contains('hidden')) {
+      openSettings();
+    } else {
+      closeSettings();
+    }
+  });
+
   // Tray workspace activation
   api.tray.onActivateWorkspace((workspaceId) => {
     if (tabs.has(workspaceId)) {
       activateTab(workspaceId);
+    } else {
+      // Workspace not open — find it in allWorkspaces and open it
+      const ws = allWorkspaces.find(w => w.id === workspaceId);
+      if (ws) {
+        addWorkspaceTab(ws).then(() => {
+          activateTab(workspaceId);
+          renderSidebar();
+        });
+      }
+    }
+  });
+
+  // Claude Code metrics updates
+  api.claude.onMetricsUpdate((entry) => {
+    claudeMetrics.set(entry.workspaceId, entry);
+    // If this is the active tab, update display immediately
+    if (activeTabId) {
+      const tab = tabs.get(activeTabId);
+      if (tab && tab.workspace.id === entry.workspaceId) {
+        updateClaudeMetricsDisplay(entry);
+      }
+    }
+  });
+
+  // Analytics dashboard shortcut
+  api.claude.onAnalyticsDashboard(() => {
+    if (dashboardOverlay.classList.contains('hidden')) {
+      openDashboard();
+    } else {
+      closeDashboard();
     }
   });
 }
@@ -1612,6 +2462,9 @@ setInterval(() => {
 
 addTabBtn.addEventListener('click', openNewModal);
 emptyAddBtn.addEventListener('click', openNewModal);
+sidebarToggleBtn.addEventListener('click', toggleSidebar);
+sidebarAddBtn.addEventListener('click', openNewModal);
+sidebarFilter.addEventListener('input', () => renderSidebar());
 modalCancel.addEventListener('click', closeModal);
 modalSave.addEventListener('click', saveModal);
 
@@ -1721,9 +2574,15 @@ async function init(): Promise<void> {
 
   setupIpcListeners();
 
+  // Load settings first so terminal creation uses correct font/theme
+  try {
+    currentSettings = await api.app.getSettings();
+  } catch {}
+  applyTheme(currentSettings.theme);
+
   // Load saved workspaces
   const config = await api.app.getConfig();
-  const workspaces: Workspace[] = config.workspaces || [];
+  allWorkspaces = config.workspaces || [];
 
   // #3: Load group states
   const groups: WorkspaceGroup[] = config.groups || [];
@@ -1734,26 +2593,68 @@ async function init(): Promise<void> {
   // #8: Load templates
   templates = config.templates || [];
 
-  if (workspaces.length === 0) {
+  // Install Claude Code statusline hook (idempotent)
+  try {
+    await api.claude.setupHook();
+  } catch {}
+
+  // Render sidebar (shows all workspaces regardless of open state)
+  renderSidebar();
+
+  if (allWorkspaces.length === 0) {
     updateEmptyState();
     return;
   }
 
-  // Create tabs for all workspaces
-  for (const ws of workspaces) {
-    await addWorkspaceTab(ws, ws.autoStart);
+  // Phase 2: Auth pre-check for Claude workspaces
+  let claudeAuthenticated = true;
+  try {
+    const authStatus = await api.claude.checkAuth();
+    claudeAuthenticated = authStatus.authenticated;
+  } catch {
+    // If check fails, assume authenticated to avoid blocking
   }
 
-  // Activate the last active tab or the first one
+  // Only auto-open workspaces with autoStart: true
+  // Stagger startup commands so the first claude process authenticates
+  // before subsequent ones start (prevents multiple sign-in prompts)
+  const STARTUP_STAGGER_MS = 3000;
+  const autoStartWorkspaces = allWorkspaces.filter(ws => ws.autoStart);
+  let claudeIdx = 0;
+  for (let i = 0; i < autoStartWorkspaces.length; i++) {
+    const ws = autoStartWorkspaces[i];
+    const isClaudeWorkspace = ws.startupCommand?.includes('claude');
+
+    if (!claudeAuthenticated && isClaudeWorkspace) {
+      // Spawn terminal but clear startupCommand so shell opens without running claude
+      const wsWithoutCmd = { ...ws, startupCommand: undefined };
+      await addWorkspaceTab(wsWithoutCmd, true);
+      const tab = tabs.get(ws.id);
+      if (tab) {
+        // Restore the original workspace reference (with startupCommand)
+        tab.workspace = ws;
+        const leaves = findAllLeaves(tab.paneRoot);
+        for (const leaf of leaves) {
+          leaf.terminal.writeln('\x1b[33m[KiteTerm] Claude CLI is not authenticated. Run "claude auth login" to sign in.\x1b[0m\r\n');
+        }
+      }
+    } else {
+      const startupDelay = 600 + (isClaudeWorkspace ? (claudeIdx++ * STARTUP_STAGGER_MS) : 0);
+      await addWorkspaceTab(ws, true, startupDelay);
+    }
+  }
+
+  // Activate the last active tab or the first open one
   const targetTab = config.activeTabId && tabs.has(config.activeTabId)
     ? config.activeTabId
-    : workspaces[0]?.id;
+    : autoStartWorkspaces[0]?.id;
 
-  if (targetTab) {
+  if (targetTab && tabs.has(targetTab)) {
     activateTab(targetTab);
   }
 
   updateEmptyState();
+  renderSidebar();
 }
 
 // Start the app

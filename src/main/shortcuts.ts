@@ -85,6 +85,27 @@ export function registerWindowShortcuts(window: BrowserWindow): void {
       window.webContents.send('shortcut:close-pane');
       return;
     }
+
+    // Ctrl+B — toggle sidebar
+    if (input.key === 'b' && !input.shift && !input.alt) {
+      event.preventDefault();
+      window.webContents.send('shortcut:toggle-sidebar');
+      return;
+    }
+
+    // Ctrl+, — settings
+    if (input.key === ',' && !input.shift && !input.alt) {
+      event.preventDefault();
+      window.webContents.send('shortcut:settings');
+      return;
+    }
+
+    // Ctrl+Shift+A — analytics dashboard
+    if (input.key === 'A' && input.shift && !input.alt) {
+      event.preventDefault();
+      window.webContents.send('shortcut:analytics-dashboard');
+      return;
+    }
   });
 
   // Menu bar for discoverability (and Ctrl+T, Ctrl+W, Ctrl+Q)
@@ -110,6 +131,12 @@ export function registerWindowShortcuts(window: BrowserWindow): void {
         {
           label: 'Import Config...',
           click: () => window.webContents.send('shortcut:import-config'),
+        },
+        { type: 'separator' },
+        {
+          label: 'Settings',
+          accelerator: 'CommandOrControl+,',
+          click: () => window.webContents.send('shortcut:settings'),
         },
         { type: 'separator' },
         { label: 'Quit', accelerator: 'CommandOrControl+Q', role: 'quit' },
@@ -139,6 +166,17 @@ export function registerWindowShortcuts(window: BrowserWindow): void {
     {
       label: 'View',
       submenu: [
+        {
+          label: 'Toggle Sidebar',
+          accelerator: 'CommandOrControl+B',
+          click: () => window.webContents.send('shortcut:toggle-sidebar'),
+        },
+        {
+          label: 'Analytics Dashboard',
+          accelerator: 'CommandOrControl+Shift+A',
+          click: () => window.webContents.send('shortcut:analytics-dashboard'),
+        },
+        { type: 'separator' },
         { label: 'Zoom In', accelerator: 'CommandOrControl+=', role: 'zoomIn' },
         { label: 'Zoom Out', accelerator: 'CommandOrControl+-', role: 'zoomOut' },
         { label: 'Reset Zoom', accelerator: 'CommandOrControl+0', role: 'resetZoom' },

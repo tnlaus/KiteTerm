@@ -1,9 +1,9 @@
 import Store from 'electron-store';
-import { AppConfig, Workspace, WindowState, WorkspaceTemplate, WorkspaceGroup } from '../shared/types';
+import { AppConfig, Workspace, WindowState, WorkspaceTemplate, WorkspaceGroup, AppSettings, AnthropicApiConfig } from '../shared/types';
 import { v4 as uuid } from 'uuid';
 import * as fs from 'fs';
 import * as path from 'path';
-import { app } from 'electron';
+import { app, safeStorage } from 'electron';
 
 const DEFAULT_CONFIG: AppConfig = {
   version: 1,
@@ -182,6 +182,80 @@ export function importConfig(data: Partial<AppConfig>): void {
   if (data.groups) store.set('groups', data.groups);
   if (data.theme) store.set('theme', data.theme);
   if (data.defaultShell) store.set('defaultShell', data.defaultShell);
+}
+
+// Settings
+const DEFAULT_SETTINGS: AppSettings = {
+  fontSize: 14,
+  fontFamily: "'Cascadia Code', 'Consolas', 'JetBrains Mono', 'Fira Code', monospace",
+  defaultShell: process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh',
+  scrollbackLimit: 10000,
+  theme: 'dark',
+  notifyOnIdle: false,
+  notifyDelaySeconds: 5,
+};
+
+export function getSettings(): AppSettings {
+  const stored = store.get('settings' as any) as AppSettings | undefined;
+  if (stored) return { ...DEFAULT_SETTINGS, ...stored };
+  // Backward compat: read theme/defaultShell from top-level config
+  return {
+    ...DEFAULT_SETTINGS,
+    theme: store.get('theme', 'dark') as 'dark' | 'light',
+    defaultShell: store.get('defaultShell', DEFAULT_SETTINGS.defaultShell),
+  };
+}
+
+export function updateSettings(updates: Partial<AppSettings>): AppSettings {
+  const current = getSettings();
+  const merged = { ...current, ...updates };
+  store.set('settings' as any, merged);
+  // Keep top-level theme/defaultShell in sync
+  if (updates.theme) store.set('theme', updates.theme);
+  if (updates.defaultShell) store.set('defaultShell', updates.defaultShell);
+  return merged;
+}
+
+// Phase 4: Anthropic API config with encrypted key storage
+export function getApiConfig(): AnthropicApiConfig {
+  const stored = store.get('anthropicApi' as any) as any;
+  if (!stored) {
+    return { apiKey: '', enabled: false };
+  }
+
+  let apiKey = '';
+  if (stored.encryptedKey && safeStorage.isEncryptionAvailable()) {
+    try {
+      apiKey = safeStorage.decryptString(Buffer.from(stored.encryptedKey, 'base64'));
+    } catch {
+      // Decryption failed — key may have been stored on a different machine
+      apiKey = '';
+    }
+  }
+
+  return {
+    apiKey,
+    orgId: stored.orgId || '',
+    enabled: stored.enabled || false,
+  };
+}
+
+export function setApiConfig(config: AnthropicApiConfig): boolean {
+  try {
+    let encryptedKey = '';
+    if (config.apiKey && safeStorage.isEncryptionAvailable()) {
+      encryptedKey = safeStorage.encryptString(config.apiKey).toString('base64');
+    }
+
+    store.set('anthropicApi' as any, {
+      encryptedKey,
+      orgId: config.orgId || '',
+      enabled: config.enabled,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export { store };

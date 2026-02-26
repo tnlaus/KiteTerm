@@ -1,5 +1,5 @@
 import { ipcMain, BrowserWindow, dialog, app } from 'electron';
-import { IPC_CHANNELS, PtySpawnRequest, PtyResizeMessage, Workspace, WorkspaceTemplate } from '../shared/types';
+import { IPC_CHANNELS, PtySpawnRequest, PtyResizeMessage, Workspace, WorkspaceTemplate, AppSettings, AnthropicApiConfig } from '../shared/types';
 import { spawnPty, writeToPty, resizePty, killPty, killPtysForWorkspace, writeCommandToPty } from './pty-manager';
 import {
   getConfig,
@@ -16,9 +16,25 @@ import {
   toggleGroup,
   ensureGroup,
   importConfig,
+  getSettings,
+  updateSettings,
+  getApiConfig,
+  setApiConfig,
 } from './store';
+import {
+  getLatestMetrics,
+  setupStatuslineHook,
+  checkClaudeAuth,
+  getAnalytics,
+  clearAnalytics,
+} from './claude-metrics';
+import { testApiConnection, fetchOrgUsage } from './anthropic-api';
 import * as fs from 'fs';
 import * as path from 'path';
+
+function sanitizeFileName(name: string): string {
+  return name.replace(/[:<>"|?*]/g, '_');
+}
 
 export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void {
   // --- PTY Operations ---
@@ -180,24 +196,56 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     }
   });
 
-  // #1: Save scrollback
+  // #1: Save scrollback (sanitize for Windows paths)
   ipcMain.handle(IPC_CHANNELS.APP_SAVE_SCROLLBACK, (_event, { workspaceId, content }: { workspaceId: string; content: string }) => {
     const scrollbackDir = path.join(app.getPath('userData'), 'scrollback');
     if (!fs.existsSync(scrollbackDir)) {
       fs.mkdirSync(scrollbackDir, { recursive: true });
     }
-    const filePath = path.join(scrollbackDir, `${workspaceId}.txt`);
+    const filePath = path.join(scrollbackDir, `${sanitizeFileName(workspaceId)}.txt`);
     fs.writeFileSync(filePath, content, 'utf-8');
     return true;
   });
 
-  // #1: Load scrollback
+  // #1: Load scrollback (sanitize for Windows paths)
   ipcMain.handle(IPC_CHANNELS.APP_LOAD_SCROLLBACK, (_event, workspaceId: string) => {
-    const filePath = path.join(app.getPath('userData'), 'scrollback', `${workspaceId}.txt`);
+    const filePath = path.join(app.getPath('userData'), 'scrollback', `${sanitizeFileName(workspaceId)}.txt`);
     if (fs.existsSync(filePath)) {
       return fs.readFileSync(filePath, 'utf-8');
     }
     return null;
+  });
+
+  // Pane layout persistence
+  ipcMain.handle(IPC_CHANNELS.APP_SAVE_PANE_LAYOUT, (_event, { workspaceId, layout }: { workspaceId: string; layout: any }) => {
+    const layoutDir = path.join(app.getPath('userData'), 'pane-layouts');
+    if (!fs.existsSync(layoutDir)) {
+      fs.mkdirSync(layoutDir, { recursive: true });
+    }
+    const filePath = path.join(layoutDir, `${sanitizeFileName(workspaceId)}.json`);
+    fs.writeFileSync(filePath, JSON.stringify(layout), 'utf-8');
+    return true;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_LOAD_PANE_LAYOUT, (_event, workspaceId: string) => {
+    const filePath = path.join(app.getPath('userData'), 'pane-layouts', `${sanitizeFileName(workspaceId)}.json`);
+    if (fs.existsSync(filePath)) {
+      try {
+        return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  });
+
+  // Settings
+  ipcMain.handle(IPC_CHANNELS.APP_GET_SETTINGS, () => {
+    return getSettings();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_UPDATE_SETTINGS, (_event, updates: Partial<AppSettings>) => {
+    return updateSettings(updates);
   });
 
   // #8: Template operations
@@ -211,5 +259,47 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   ipcMain.handle(IPC_CHANNELS.TEMPLATE_DELETE, (_event, name: string) => {
     return deleteTemplate(name);
+  });
+
+  // --- Claude Code Integration ---
+
+  // Phase 1: Metrics
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_METRICS_GET, (_event, workspaceId: string) => {
+    return getLatestMetrics(workspaceId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_METRICS_SETUP_HOOK, () => {
+    return setupStatuslineHook();
+  });
+
+  // Phase 2: Auth check
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_AUTH_CHECK, async () => {
+    return checkClaudeAuth();
+  });
+
+  // Phase 3: Analytics
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_ANALYTICS_GET, () => {
+    return getAnalytics();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.CLAUDE_ANALYTICS_CLEAR, () => {
+    return clearAnalytics();
+  });
+
+  // Phase 4: Anthropic API
+  ipcMain.handle(IPC_CHANNELS.ANTHROPIC_API_GET_CONFIG, () => {
+    return getApiConfig();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.ANTHROPIC_API_SET_CONFIG, (_event, config: AnthropicApiConfig) => {
+    return setApiConfig(config);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.ANTHROPIC_API_TEST, async (_event, apiKey: string) => {
+    return testApiConnection(apiKey);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.ANTHROPIC_API_GET_USAGE, async (_event, { apiKey, period }: { apiKey: string; period?: string }) => {
+    return fetchOrgUsage(apiKey, period);
   });
 }

@@ -11,6 +11,33 @@ export interface Workspace {
   autoRestart?: boolean; // #9: Auto-restart on crash
   maxRestarts?: number; // #9: Max restart attempts (default 3)
   group?: string; // #3: Workspace group name
+  pinned?: boolean; // Tab pinning
+}
+
+// Serialized pane tree for persistent split layouts
+export interface SerializedPaneLeaf {
+  type: 'leaf';
+  id: string;
+}
+
+export interface SerializedPaneSplit {
+  type: 'split';
+  direction: 'horizontal' | 'vertical';
+  children: [SerializedPaneNode, SerializedPaneNode];
+  ratio: number;
+}
+
+export type SerializedPaneNode = SerializedPaneLeaf | SerializedPaneSplit;
+
+// App settings
+export interface AppSettings {
+  fontSize: number;
+  fontFamily: string;
+  defaultShell: string;
+  scrollbackLimit: number;
+  theme: 'dark' | 'light';
+  notifyOnIdle: boolean;
+  notifyDelaySeconds: number;
 }
 
 // #8: Workspace template (like Workspace but no id/cwd)
@@ -118,12 +145,111 @@ export const IPC_CHANNELS = {
   APP_IMPORT_CONFIG: 'app:import-config', // #10
   APP_SAVE_SCROLLBACK: 'app:save-scrollback', // #1
   APP_LOAD_SCROLLBACK: 'app:load-scrollback', // #1
+  APP_SAVE_PANE_LAYOUT: 'app:save-pane-layout',
+  APP_LOAD_PANE_LAYOUT: 'app:load-pane-layout',
+  APP_GET_SETTINGS: 'app:get-settings',
+  APP_UPDATE_SETTINGS: 'app:update-settings',
 
   // Template operations (#8)
   TEMPLATE_LIST: 'template:list',
   TEMPLATE_CREATE: 'template:create',
   TEMPLATE_DELETE: 'template:delete',
+
+  // Claude Code integration
+  CLAUDE_METRICS_UPDATE: 'claude:metrics:update',
+  CLAUDE_METRICS_GET: 'claude:metrics:get',
+  CLAUDE_METRICS_SETUP_HOOK: 'claude:metrics:setup-hook',
+  CLAUDE_AUTH_CHECK: 'claude:auth:check',
+  CLAUDE_ANALYTICS_GET: 'claude:analytics:get',
+  CLAUDE_ANALYTICS_CLEAR: 'claude:analytics:clear',
+  CLAUDE_ANALYTICS_DASHBOARD: 'claude:analytics:dashboard',
+
+  // Anthropic API
+  ANTHROPIC_API_GET_CONFIG: 'anthropic:api:get-config',
+  ANTHROPIC_API_SET_CONFIG: 'anthropic:api:set-config',
+  ANTHROPIC_API_TEST: 'anthropic:api:test',
+  ANTHROPIC_API_GET_USAGE: 'anthropic:api:get-usage',
 } as const;
+
+// ============================================
+// Claude Code Integration Types
+// ============================================
+
+// Phase 1: Statusline metrics from Claude Code
+export interface ClaudeMetrics {
+  model: string;
+  context_window: number;
+  context_used: number;
+  context_used_percent: number;
+  cost_usd: number;
+  version: string;
+  total_tokens_in: number;
+  total_tokens_out: number;
+  lines_added: number;
+  lines_removed: number;
+  workspace: string;
+}
+
+export interface ClaudeMetricsEntry {
+  timestamp: number;
+  workspaceId: string;
+  metrics: ClaudeMetrics;
+}
+
+// Phase 2: Auth pre-check
+export interface ClaudeAuthStatus {
+  authenticated: boolean;
+  account_type?: string;
+  email?: string;
+  error?: string;
+}
+
+// Phase 3: Analytics dashboard
+export interface ClaudeAnalytics {
+  totals: {
+    cost_usd: number;
+    sessions: number;
+    lines_added: number;
+    lines_removed: number;
+    total_tokens_in: number;
+    total_tokens_out: number;
+  };
+  perWorkspace: Array<{
+    workspaceId: string;
+    name: string;
+    cost_usd: number;
+    sessions: number;
+    model: string;
+    lastActive: number;
+    lines_added: number;
+    lines_removed: number;
+  }>;
+  history: Array<{
+    date: string; // YYYY-MM-DD
+    cost_usd: number;
+    sessions: number;
+  }>;
+}
+
+// Phase 4: Anthropic API integration
+export interface AnthropicApiConfig {
+  apiKey: string; // encrypted on disk
+  orgId?: string;
+  enabled: boolean;
+}
+
+export interface OrgUsageReport {
+  period: string;
+  total_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  models: Array<{
+    model: string;
+    cost_usd: number;
+    input_tokens: number;
+    output_tokens: number;
+  }>;
+}
 
 // Preset colors for workspaces
 export const WORKSPACE_COLORS = [

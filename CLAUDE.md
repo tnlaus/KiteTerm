@@ -81,6 +81,12 @@ npm run build      # Production build
 npm run make       # Package as .exe
 ```
 
+**IMPORTANT:** Before running `npm start`, always kill any lingering Electron processes first:
+```bash
+taskkill //F //IM electron.exe 2>/dev/null; npm start
+```
+This prevents stale processes from locking files or ports. Do this every time you restart the app.
+
 ## Features
 
 1. **Scrollback Persistence** — Terminal buffer saved/restored across sessions

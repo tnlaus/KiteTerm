@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHANNELS, PtySpawnRequest, Workspace, WorkspaceTemplate, WorkspaceGroup, AppConfig } from '../shared/types';
+import { IPC_CHANNELS, PtySpawnRequest, Workspace, WorkspaceTemplate, WorkspaceGroup, AppConfig, AppSettings, SerializedPaneNode, ClaudeMetricsEntry, ClaudeAuthStatus, ClaudeAnalytics, AnthropicApiConfig, OrgUsageReport } from '../shared/types';
 
 // Expose a safe API to the renderer process
 contextBridge.exposeInMainWorld('api', {
@@ -59,6 +59,13 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.invoke(IPC_CHANNELS.APP_SAVE_SCROLLBACK, { workspaceId, content }), // #1
     loadScrollback: (workspaceId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.APP_LOAD_SCROLLBACK, workspaceId), // #1
+    savePaneLayout: (workspaceId: string, layout: SerializedPaneNode) =>
+      ipcRenderer.invoke(IPC_CHANNELS.APP_SAVE_PANE_LAYOUT, { workspaceId, layout }),
+    loadPaneLayout: (workspaceId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.APP_LOAD_PANE_LAYOUT, workspaceId),
+    getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_SETTINGS),
+    updateSettings: (updates: Partial<AppSettings>) =>
+      ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATE_SETTINGS, updates),
   },
 
   // --- Templates (#8) ---
@@ -66,6 +73,42 @@ contextBridge.exposeInMainWorld('api', {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_LIST),
     create: (template: WorkspaceTemplate) => ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_CREATE, template),
     delete: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_DELETE, name),
+  },
+
+  // --- Claude Code Integration ---
+  claude: {
+    getMetrics: (workspaceId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_METRICS_GET, workspaceId),
+    setupHook: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_METRICS_SETUP_HOOK),
+    onMetricsUpdate: (callback: (entry: ClaudeMetricsEntry) => void) => {
+      const handler = (_event: any, entry: ClaudeMetricsEntry) => callback(entry);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_METRICS_UPDATE, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_METRICS_UPDATE, handler);
+    },
+    checkAuth: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_AUTH_CHECK) as Promise<ClaudeAuthStatus>,
+    getAnalytics: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_ANALYTICS_GET) as Promise<ClaudeAnalytics>,
+    clearAnalytics: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.CLAUDE_ANALYTICS_CLEAR) as Promise<boolean>,
+    onAnalyticsDashboard: (cb: () => void) => {
+      const handler = () => cb();
+      ipcRenderer.on('shortcut:analytics-dashboard', handler);
+      return () => ipcRenderer.removeListener('shortcut:analytics-dashboard', handler);
+    },
+  },
+
+  // --- Anthropic API ---
+  anthropic: {
+    getConfig: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANTHROPIC_API_GET_CONFIG) as Promise<AnthropicApiConfig>,
+    setConfig: (config: AnthropicApiConfig) =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANTHROPIC_API_SET_CONFIG, config) as Promise<boolean>,
+    testConnection: (apiKey: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANTHROPIC_API_TEST, apiKey) as Promise<{ success: boolean; error?: string }>,
+    getUsage: (apiKey: string, period?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.ANTHROPIC_API_GET_USAGE, { apiKey, period }) as Promise<OrgUsageReport | { error: string }>,
   },
 
   // --- Shortcut listeners ---
@@ -139,6 +182,16 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.on('shortcut:import-config', handler);
       return () => ipcRenderer.removeListener('shortcut:import-config', handler);
     },
+    onSettings: (cb: () => void) => {
+      const handler = () => cb();
+      ipcRenderer.on('shortcut:settings', handler);
+      return () => ipcRenderer.removeListener('shortcut:settings', handler);
+    },
+    onToggleSidebar: (cb: () => void) => {
+      const handler = () => cb();
+      ipcRenderer.on('shortcut:toggle-sidebar', handler);
+      return () => ipcRenderer.removeListener('shortcut:toggle-sidebar', handler);
+    },
   },
 
   // --- Tray events ---
@@ -181,11 +234,30 @@ export interface ElectronAPI {
     importConfig: () => Promise<{ success?: boolean; canceled?: boolean; error?: string }>;
     saveScrollback: (workspaceId: string, content: string) => Promise<boolean>;
     loadScrollback: (workspaceId: string) => Promise<string | null>;
+    savePaneLayout: (workspaceId: string, layout: SerializedPaneNode) => Promise<boolean>;
+    loadPaneLayout: (workspaceId: string) => Promise<SerializedPaneNode | null>;
+    getSettings: () => Promise<AppSettings>;
+    updateSettings: (updates: Partial<AppSettings>) => Promise<AppSettings>;
   };
   template: {
     list: () => Promise<WorkspaceTemplate[]>;
     create: (template: WorkspaceTemplate) => Promise<WorkspaceTemplate>;
     delete: (name: string) => Promise<boolean>;
+  };
+  claude: {
+    getMetrics: (workspaceId: string) => Promise<ClaudeMetricsEntry | null>;
+    setupHook: () => Promise<{ success: boolean; error?: string }>;
+    onMetricsUpdate: (callback: (entry: ClaudeMetricsEntry) => void) => () => void;
+    checkAuth: () => Promise<ClaudeAuthStatus>;
+    getAnalytics: () => Promise<ClaudeAnalytics>;
+    clearAnalytics: () => Promise<boolean>;
+    onAnalyticsDashboard: (cb: () => void) => () => void;
+  };
+  anthropic: {
+    getConfig: () => Promise<AnthropicApiConfig>;
+    setConfig: (config: AnthropicApiConfig) => Promise<boolean>;
+    testConnection: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
+    getUsage: (apiKey: string, period?: string) => Promise<OrgUsageReport | { error: string }>;
   };
   shortcuts: {
     onNewWorkspace: (cb: () => void) => () => void;
@@ -201,6 +273,8 @@ export interface ElectronAPI {
     onClosePane: (cb: () => void) => () => void;
     onExportConfig: (cb: () => void) => () => void;
     onImportConfig: (cb: () => void) => () => void;
+    onSettings: (cb: () => void) => () => void;
+    onToggleSidebar: (cb: () => void) => () => void;
   };
   tray: {
     onActivateWorkspace: (cb: (workspaceId: string) => void) => () => void;

@@ -1,10 +1,11 @@
 import { app, BrowserWindow, screen } from 'electron';
 import * as path from 'path';
 import { registerIpcHandlers } from './ipc-handlers';
-import { getConfig, saveWindowState } from './store';
+import { getConfig, saveWindowState, getSettings } from './store';
 import { createTray, updateTrayMenu, destroyTray } from './tray';
 import { registerShortcuts, registerWindowShortcuts, unregisterShortcuts } from './shortcuts';
 import { killAllPtys } from './pty-manager';
+import { stopAllMetricsWatchers } from './claude-metrics';
 
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
@@ -39,7 +40,7 @@ function createWindow(): void {
     y: validPosition ? windowState.y : undefined,
     minWidth: 600,
     minHeight: 400,
-    backgroundColor: '#0D1117',
+    backgroundColor: getSettings().theme === 'light' ? '#FFFFFF' : '#0D1117',
     title: 'KiteTerm',
     icon: path.join(__dirname, '../../assets/icon.png'),
     show: false, // Show after ready-to-show
@@ -137,6 +138,7 @@ app.on('activate', () => {
 app.on('before-quit', () => {
   isQuitting = true;
   killAllPtys();
+  stopAllMetricsWatchers();
   unregisterShortcuts();
   destroyTray();
 });

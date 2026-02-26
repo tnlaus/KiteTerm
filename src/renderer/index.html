@@ -12,19 +12,35 @@
   <div id="app">
     <!-- Tab Bar -->
     <div id="tab-bar">
+      <button id="sidebar-toggle-btn" title="Toggle Sidebar (Ctrl+B)">&#9776;</button>
       <div id="tab-list"></div>
       <button id="add-tab-btn" title="New Workspace (Ctrl+T)">+</button>
     </div>
 
-    <!-- Terminal Container -->
-    <div id="terminal-container">
-      <!-- #7: Search Bar (floating inside terminal area) -->
-      <div id="search-bar" class="hidden">
-        <input type="text" id="search-input" placeholder="Find..." autocomplete="off" />
-        <span id="search-match-count"></span>
-        <button id="search-prev" title="Previous (Shift+Enter)">&uarr;</button>
-        <button id="search-next" title="Next (Enter)">&darr;</button>
-        <button id="search-close" title="Close (Escape)">&times;</button>
+    <!-- Main Area (sidebar + terminal) -->
+    <div id="main-area">
+      <!-- Sidebar -->
+      <div id="sidebar">
+        <div id="sidebar-header">
+          <span id="sidebar-title">Workspaces</span>
+          <button id="sidebar-add-btn" title="New Workspace">+</button>
+        </div>
+        <div id="sidebar-filter-wrap">
+          <input type="text" id="sidebar-filter" placeholder="Filter..." autocomplete="off" />
+        </div>
+        <div id="sidebar-list"></div>
+      </div>
+
+      <!-- Terminal Container -->
+      <div id="terminal-container">
+        <!-- #7: Search Bar (floating inside terminal area) -->
+        <div id="search-bar" class="hidden">
+          <input type="text" id="search-input" placeholder="Find..." autocomplete="off" />
+          <span id="search-match-count"></span>
+          <button id="search-prev" title="Previous (Shift+Enter)">&uarr;</button>
+          <button id="search-next" title="Next (Enter)">&darr;</button>
+          <button id="search-close" title="Close (Escape)">&times;</button>
+        </div>
       </div>
     </div>
 
@@ -36,6 +52,16 @@
       </div>
       <div id="status-cwd"></div>
       <div id="status-shell"></div>
+      <div id="status-claude" class="status-claude hidden">
+        <span id="status-model"></span>
+        <span id="status-context">
+          <span class="context-label">Ctx</span>
+          <span class="context-bar"><span class="context-bar-fill"></span></span>
+          <span id="status-context-pct"></span>
+        </span>
+        <span id="status-cost"></span>
+        <span id="status-lines"></span>
+      </div>
       <div id="status-shortcuts">Ctrl+P switcher | Ctrl+F find | Ctrl+1-9 tabs</div>
     </div>
 
@@ -99,6 +125,124 @@
       <div id="quick-switcher">
         <input type="text" id="qs-input" placeholder="Switch to workspace..." autocomplete="off" />
         <div id="qs-results"></div>
+      </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div id="settings-overlay" class="hidden">
+      <div id="settings-modal">
+        <h2>Settings</h2>
+        <div class="form-group">
+          <label for="set-font-size">Font Size</label>
+          <input type="number" id="set-font-size" min="8" max="32" value="14" />
+        </div>
+        <div class="form-group">
+          <label for="set-font-family">Font Family</label>
+          <input type="text" id="set-font-family" value="" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="set-default-shell">Default Shell</label>
+          <input type="text" id="set-default-shell" value="" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="set-scrollback">Scrollback Limit</label>
+          <input type="number" id="set-scrollback" min="1000" max="100000" value="10000" />
+        </div>
+        <div class="form-group">
+          <label for="set-theme">Theme</label>
+          <select id="set-theme">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </div>
+        <div class="form-group checkbox-group">
+          <input type="checkbox" id="set-notify-idle" />
+          <label for="set-notify-idle">Notify on command completion (when window is blurred)</label>
+        </div>
+        <div class="form-group">
+          <label for="set-notify-delay">Notification Delay (seconds)</label>
+          <input type="number" id="set-notify-delay" min="1" max="60" value="5" />
+        </div>
+        <!-- Phase 4: API Integration -->
+        <div class="settings-section-divider"></div>
+        <h3 class="settings-section-title">Anthropic API Integration</h3>
+        <div class="form-group">
+          <label for="set-api-key">API Key</label>
+          <div class="folder-input">
+            <input type="password" id="set-api-key" placeholder="sk-ant-..." autocomplete="off" />
+            <button id="set-api-test" class="btn-secondary">Test</button>
+          </div>
+          <span id="set-api-status" class="settings-api-status"></span>
+        </div>
+        <div class="form-group">
+          <label for="set-api-org">Organization ID (optional)</label>
+          <input type="text" id="set-api-org" placeholder="org-..." autocomplete="off" />
+        </div>
+        <div class="form-group checkbox-group">
+          <input type="checkbox" id="set-api-enabled" />
+          <label for="set-api-enabled">Enable org-level usage in dashboard</label>
+        </div>
+        <div class="modal-actions">
+          <button id="settings-cancel" class="btn-secondary">Cancel</button>
+          <button id="settings-save" class="btn-primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Analytics Dashboard -->
+    <div id="dashboard-overlay" class="hidden">
+      <div id="dashboard-panel">
+        <div class="dashboard-header">
+          <h2>Analytics Dashboard</h2>
+          <div class="dashboard-actions">
+            <button id="dash-clear-btn" class="btn-secondary" title="Clear all metrics data">Clear Data</button>
+            <button id="dash-close-btn" class="btn-secondary">Close</button>
+          </div>
+        </div>
+        <div id="dash-cards" class="dash-cards">
+          <div class="dash-card">
+            <div class="dash-card-label">Total Cost</div>
+            <div class="dash-card-value" id="dash-total-cost">$0.00</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-label">Sessions</div>
+            <div class="dash-card-value" id="dash-total-sessions">0</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-label">Lines Added</div>
+            <div class="dash-card-value" id="dash-total-added">0</div>
+          </div>
+          <div class="dash-card">
+            <div class="dash-card-label">Lines Removed</div>
+            <div class="dash-card-value" id="dash-total-removed">0</div>
+          </div>
+        </div>
+        <div class="dashboard-section">
+          <h3>Per Workspace</h3>
+          <div id="dash-workspace-table-wrap">
+            <table id="dash-workspace-table">
+              <thead>
+                <tr>
+                  <th>Workspace</th>
+                  <th>Cost</th>
+                  <th>Sessions</th>
+                  <th>Model</th>
+                  <th>Last Active</th>
+                </tr>
+              </thead>
+              <tbody id="dash-workspace-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="dashboard-section">
+          <h3>Cost Over Time</h3>
+          <div id="dash-chart" class="dash-chart"></div>
+        </div>
+        <!-- Phase 4: Org Usage Tab -->
+        <div class="dashboard-section" id="dash-org-section" style="display: none;">
+          <h3>Organization Usage (API)</h3>
+          <div id="dash-org-content"></div>
+        </div>
       </div>
     </div>
 
