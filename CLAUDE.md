@@ -48,11 +48,14 @@ Main Process                    Renderer Process
 src/
 ├── main/
 │   ├── index.ts           # Electron app entry, window creation
-│   ├── pty-manager.ts     # Spawns and manages node-pty processes
+│   ├── pty-manager.ts     # Spawns and manages node-pty processes (+ Shield hooks)
 │   ├── ipc-handlers.ts    # All IPC channel handlers
-│   ├── store.ts           # electron-store config wrapper
+│   ├── store.ts           # electron-store config wrapper + API key encryption
 │   ├── tray.ts            # System tray icon + menu
-│   └── shortcuts.ts       # Global keyboard shortcuts
+│   ├── shortcuts.ts       # Global keyboard shortcuts
+│   ├── claude-metrics.ts  # Statusline metrics watcher, auth check, analytics
+│   ├── anthropic-api.ts   # Anthropic API client (org usage)
+│   └── plugin-loader.ts   # Shield plugin discovery and lifecycle
 ├── renderer/
 │   ├── index.html         # HTML shell
 │   ├── index.ts           # All UI logic (vanilla TypeScript)
@@ -61,7 +64,8 @@ src/
 ├── preload/
 │   └── index.ts           # Context bridge for secure IPC
 └── shared/
-    └── types.ts           # Shared TypeScript interfaces
+    ├── types.ts           # Shared TypeScript interfaces
+    └── plugin-types.ts    # Shield plugin interface contract
 ```
 
 ## Key Design Decisions
@@ -100,10 +104,49 @@ This prevents stale processes from locking files or ports. Do this every time yo
 9. **Auto-Restart** — Configurable per-workspace crash recovery
 10. **Export/Import Config** — JSON export/import from File menu
 
+## Shield Plugin Architecture
+
+KiteTerm supports a runtime-discovered plugin called **KiteTerm Shield** (paid, closed source). The free app works identically without it.
+
+### Plugin System Files
+
+```
+src/shared/plugin-types.ts     # Plugin interface contract (ShieldPlugin, DataEvent, etc.)
+src/main/plugin-loader.ts      # Discovery, loading, lifecycle management
+SHIELD.md                      # Full Shield architecture specification
+```
+
+### How It Works
+
+1. On startup, `plugin-loader.ts` checks for Shield in 3 locations + Windows registry
+2. If found, loads it via `require()`, calls `initialize()` with a `PluginContext`
+3. Two interception hooks in `pty-manager.ts` call Shield's `interceptInput()` / `interceptOutput()` on every data event
+4. Shield returns `{ data }` to pass through, or `{ data: null }` to block
+5. Shield emits detection events to the renderer via `PluginContext.emitDetection()`
+
+### Interception Points
+
+Both hooks are in `src/main/pty-manager.ts` (main process, full Node.js access):
+
+- **Input hook** — `writeToPty()` calls `shield.interceptInput()` before `process.write(data)`
+- **Output hook** — `ptyProcess.onData()` calls `shield.interceptOutput()` before sending to renderer
+
+### IPC Channels (Shield <-> Renderer)
+
+- `shield:status` — Shield enabled/disabled + detection count
+- `shield:detection` — Real-time detection event for toast/status bar
+
+### Important
+
+- The free codebase never imports Shield code directly — only the interface types
+- Shield runs in the main process, not the renderer (full Node.js access for file I/O, crypto)
+- If Shield is not installed, the interception hooks are skipped (zero overhead)
+- See `SHIELD.md` for the full architecture spec including detection patterns, policy engine, and audit logging
+
 ## Conventions
 
 - Use TypeScript strict mode
 - Vanilla TypeScript for renderer (no framework)
-- IPC channel names are namespaced: `pty:*`, `workspace:*`, `app:*`, `template:*`
+- IPC channel names are namespaced: `pty:*`, `workspace:*`, `app:*`, `template:*`, `shield:*`
 - Colors use CSS custom properties defined in global.css
 - All user-facing strings are in components (no i18n yet)

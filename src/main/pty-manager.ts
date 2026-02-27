@@ -3,6 +3,7 @@ import { BrowserWindow } from 'electron';
 import { IPC_CHANNELS, PtySpawnRequest } from '../shared/types';
 import { getDefaultShell } from './store';
 import { getMetricsDir, startMetricsWatcher, stopMetricsWatcher } from './claude-metrics';
+import { getShieldPlugin } from './plugin-loader';
 
 interface ManagedPty {
   process: pty.IPty;
@@ -61,9 +62,20 @@ export function spawnPty(
       isAlive: true,
     };
 
-    // Pipe PTY output to renderer
+    // Pipe PTY output to renderer (with Shield interception if active)
     ptyProcess.onData((data: string) => {
       if (window && !window.isDestroyed()) {
+        // Shield output interception hook
+        const shield = getShieldPlugin();
+        if (shield) {
+          const result = shield.interceptOutput({
+            workspaceId, paneId: workspaceId, data,
+            direction: 'output', timestamp: Date.now(),
+          });
+          if (result.data === null) return; // Blocked by Shield
+          data = result.data;
+        }
+
         window.webContents.send(IPC_CHANNELS.PTY_DATA_TO_RENDERER, {
           workspaceId,
           data,
@@ -98,6 +110,17 @@ export function spawnPty(
 export function writeToPty(workspaceId: string, data: string): void {
   const managed = activePtys.get(workspaceId);
   if (managed?.isAlive) {
+    // Shield input interception hook
+    const shield = getShieldPlugin();
+    if (shield) {
+      const result = shield.interceptInput({
+        workspaceId, paneId: workspaceId, data,
+        direction: 'input', timestamp: Date.now(),
+      });
+      if (result.data === null) return; // Blocked by Shield
+      data = result.data;
+    }
+
     managed.process.write(data);
   }
 }

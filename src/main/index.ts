@@ -6,6 +6,7 @@ import { createTray, updateTrayMenu, destroyTray } from './tray';
 import { registerShortcuts, registerWindowShortcuts, unregisterShortcuts } from './shortcuts';
 import { killAllPtys } from './pty-manager';
 import { stopAllMetricsWatchers } from './claude-metrics';
+import { loadShieldPlugin, unloadShieldPlugin } from './plugin-loader';
 
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
@@ -114,6 +115,11 @@ app.whenReady().then(() => {
 
   createWindow();
 
+  // Load Shield plugin if installed (no-op if not found)
+  if (mainWindow) {
+    loadShieldPlugin(mainWindow).catch(() => {});
+  }
+
   // System tray
   createTray(getWindow);
 
@@ -137,6 +143,7 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  unloadShieldPlugin().catch(() => {});
   killAllPtys();
   stopAllMetricsWatchers();
   unregisterShortcuts();

@@ -151,6 +151,12 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Whether it's a bug fix, feature, docs improvement, or just a typo — all contributions are appreciated.
 
+## KiteTerm Shield
+
+**KiteTerm Shield** adds DLP, audit logging, and compliance features for enterprise and government teams. Detect sensitive data (PII, credentials, classification markers) flowing through AI coding sessions, enforce security policies per workspace, and generate tamper-evident audit trails for ISM compliance.
+
+[Learn more](https://tnlit.com.au/kiteterm-shield) | [Contact sales](mailto:hello@tnlit.com.au)
+
 ## License
 
 [MIT](LICENSE) — Use it, fork it, modify it, ship it. No restrictions.
