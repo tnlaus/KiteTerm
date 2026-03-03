@@ -1,4 +1,4 @@
-# Contributing to KiteTerm
+# Contributing to Tarca Terminal
 
 Thanks for your interest in contributing! This project is maintained by [TNL IT](https://tnlit.com.au) and we welcome contributions from the community.
 
@@ -14,8 +14,8 @@ Thanks for your interest in contributing! This project is maintained by [TNL IT]
 ### Setup
 
 ```bash
-git clone https://github.com/tnlaus/KiteTerm.git
-cd KiteTerm
+git clone https://github.com/tnlaus/Tarca Terminal.git
+cd Tarca Terminal
 npm install
 npx electron-rebuild
 npm start

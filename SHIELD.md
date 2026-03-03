@@ -1,16 +1,16 @@
-# KiteTerm Shield — Architecture Specification
+# Tarca Shield — Architecture Specification
 
 ## Overview
 
-KiteTerm Shield is the paid, closed-source DLP/audit/compliance layer for KiteTerm. It ships as a plugin that the free app discovers at runtime. If installed and licensed, the PTY data stream routes through Shield's interceptor pipeline. If not installed, KiteTerm works identically — no artificial crippling.
+Tarca Shield is the paid, closed-source DLP/audit/compliance layer for Tarca Terminal. It ships as a plugin that the free app discovers at runtime. If installed and licensed, the PTY data stream routes through Shield's interceptor pipeline. If not installed, Tarca Terminal works identically — no artificial crippling.
 
 **Buyer persona:** CISOs, security managers, government procurement — not individual developers.
 
-**Core value proposition:** "What controls do you have around AI-assisted development?" KiteTerm Shield is the answer.
+**Core value proposition:** "What controls do you have around AI-assisted development?" Tarca Shield is the answer.
 
 ## Open Core Split
 
-| | KiteTerm (Free, MIT) | KiteTerm Shield (Paid, Closed Source) |
+| | Tarca Terminal (Free, MIT) | Tarca Shield (Paid, Closed Source) |
 |---|---|---|
 | **Codebase** | Public GitHub repo | Separate private repo |
 | **Distribution** | GitHub Releases, npm | Separate installer / plugin package |
@@ -30,34 +30,46 @@ Shield is a runtime-discovered plugin. The free app checks for it on startup and
 
 On app launch, `src/main/plugin-loader.ts` checks these locations in order:
 
-1. `{appPath}/plugins/kiteterm-shield/` (bundled with enterprise installer)
-2. `{userData}/plugins/kiteterm-shield/` (user-installed)
-3. Registry key `HKLM\SOFTWARE\KiteTerm\ShieldPath` (IT-deployed via GPO)
+1. `{appPath}/plugins/tarca-shield/` (bundled with enterprise installer)
+2. `{userData}/plugins/tarca-shield/` (user-installed)
+3. Registry key `HKLM\SOFTWARE\Tarca Terminal\ShieldPath` (IT-deployed via GPO)
 
-The plugin must expose a `package.json` with `"kiteterm-plugin": "shield"` and a `main` entry pointing to a CommonJS module.
+The plugin must expose a `package.json` with `"tarca-plugin": "shield"` and a `main` entry pointing to a CommonJS module.
 
 ### Plugin Interface
 
-The free app defines a `ShieldPlugin` interface in `src/shared/plugin-types.ts`. Shield implements this interface. The free app never imports Shield code directly — it loads dynamically via `require()` after validation.
+The free app defines a `ShieldPlugin` interface in `src/shared/plugin-types.ts` (re-exported from `@tarca/plugin-types`). Shield implements this interface. The free app never imports Shield code directly — it loads dynamically via `require()` after validation.
 
 ```typescript
 interface ShieldPlugin {
-  name: string;
-  version: string;
+  readonly name: string;
+  readonly version: string;
+  readonly apiVersion: number;  // Must match PLUGIN_API_VERSION
 
   // Lifecycle
   initialize(context: PluginContext): Promise<void>;
   shutdown(): Promise<void>;
 
-  // Data stream interception
-  interceptInput(event: DataEvent): DataEvent | null;  // null = block
-  interceptOutput(event: DataEvent): DataEvent | null;
+  // Data stream interception — returns InterceptResult { data, detection? }
+  interceptInput(event: DataEvent): InterceptResult;   // data: null = block
+  interceptOutput(event: DataEvent): InterceptResult;
 
   // License
   validateLicense(): Promise<LicenseStatus>;
 
-  // UI extension point
-  getStatusBarComponent?(): ShieldStatusInfo;
+  // Status
+  getStatus(): ShieldStatusInfo;
+
+  // Policy management
+  getPolicy(): PolicyConfig;
+  upsertCustomPattern(pattern: CustomPattern): PolicyConfig;
+  deleteCustomPattern(patternId: string): PolicyConfig;
+  testPattern(pattern: string, isRegex: boolean, sampleText: string): Array<{ match: string; index: number }>;
+  exportPolicy(): string;
+  importPolicy(jsonString: string): PolicyConfig;
+
+  // Warn flow audit logging (optional, checked before calling)
+  logWarnResponse?(workspaceId: string, userResponse: 'continued' | 'cancelled', detection: Detection): void;
 }
 ```
 
@@ -287,12 +299,25 @@ Policies can be:
 ## IPC Channels (Shield <-> Renderer)
 
 ```
-shield:status          — Shield enabled/disabled + detection count
-shield:detection       — Real-time detection event (for toast/status bar)
-shield:policy:get      — Get current policy
-shield:policy:update   — Update policy
-shield:license:status  — License validation result
-shield:audit:query     — Query audit logs for dashboard
+shield:status                  — Shield enabled/disabled + detection count (main → renderer)
+shield:detection               — Real-time detection event for toast/status bar (main → renderer)
+shield:warn-prompt             — Pause-and-prompt for warn detections (main → renderer)
+shield:warn-response           — User's continue/cancel response (renderer → main)
+shield:policy:get              — Get current policy config
+shield:policy:upsert-pattern   — Add/update a custom pattern
+shield:policy:delete-pattern   — Delete a custom pattern by ID
+shield:policy:test-pattern     — Test a pattern against sample text
+shield:policy:export           — Export policy to file (dialog)
+shield:policy:import           — Import policy from file (dialog)
+shield:policy:update-rules     — Update global category rules
+shield:policy:update-default   — Update default action
+shield:policy:update-workspace — Set workspace override
+shield:policy:delete-workspace — Remove workspace override
+shield:license:status          — Validate and return license status
+shield:license:install         — Install a license JWT token
+shield:audit:query             — Query audit log entries for a date
+shield:audit:export            — Export all audit logs to file (dialog)
+shield:audit:verify            — Verify hash chain integrity for a date
 ```
 
 ## Licensing

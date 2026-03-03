@@ -1,0 +1,10 @@
+{
+  "name": "Claude Code Project",
+  "description": "Best-practice Claude Code setup with CLAUDE.md, .clineignore, and .gitignore",
+  "icon": "🤖",
+  "auto_commands": ["git init", "claude"],
+  "variables": [
+    { "key": "PROJECT_NAME", "prompt": "Project name" },
+    { "key": "DESCRIPTION", "prompt": "Project description", "default": "A new project" }
+  ]
+}

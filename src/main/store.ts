@@ -23,39 +23,42 @@ const DEFAULT_CONFIG: AppConfig = {
 };
 
 const store = new Store<AppConfig>({
-  name: 'kiteterm-config',
+  name: 'tarca-config',
   defaults: DEFAULT_CONFIG,
 });
 
-// One-time migration from old "claude-terminal-config" store
+// One-time migration from old config stores (kiteterm-config or claude-terminal-config)
 (function migrateOldConfig() {
   const currentWorkspaces = store.get('workspaces', []);
   if (currentWorkspaces.length > 0) return; // Already has data, skip
 
-  const oldConfigPath = path.join(
-    app.getPath('appData'),
-    'claude-terminal-manager',
-    'claude-terminal-config.json'
-  );
+  // Try kiteterm-config first (most recent old name), then claude-terminal-config
+  const oldPaths = [
+    path.join(app.getPath('appData'), 'claude-terminal-manager', 'kiteterm-config.json'),
+    path.join(app.getPath('appData'), 'claude-terminal-manager', 'claude-terminal-config.json'),
+  ];
 
-  if (!fs.existsSync(oldConfigPath)) return;
+  for (const oldConfigPath of oldPaths) {
+    if (!fs.existsSync(oldConfigPath)) continue;
 
-  try {
-    const raw = fs.readFileSync(oldConfigPath, 'utf-8');
-    const oldConfig = JSON.parse(raw);
+    try {
+      const raw = fs.readFileSync(oldConfigPath, 'utf-8');
+      const oldConfig = JSON.parse(raw);
 
-    if (Array.isArray(oldConfig.workspaces) && oldConfig.workspaces.length > 0) {
-      store.set('workspaces', oldConfig.workspaces);
-      if (oldConfig.activeTabId) store.set('activeTabId', oldConfig.activeTabId);
-      if (oldConfig.window) store.set('window', oldConfig.window);
-      if (Array.isArray(oldConfig.templates)) store.set('templates', oldConfig.templates);
-      if (Array.isArray(oldConfig.groups)) store.set('groups', oldConfig.groups);
-      if (oldConfig.theme) store.set('theme', oldConfig.theme);
-      if (oldConfig.defaultShell) store.set('defaultShell', oldConfig.defaultShell);
-      console.log(`Migrated ${oldConfig.workspaces.length} workspace(s) from old config`);
+      if (Array.isArray(oldConfig.workspaces) && oldConfig.workspaces.length > 0) {
+        store.set('workspaces', oldConfig.workspaces);
+        if (oldConfig.activeTabId) store.set('activeTabId', oldConfig.activeTabId);
+        if (oldConfig.window) store.set('window', oldConfig.window);
+        if (Array.isArray(oldConfig.templates)) store.set('templates', oldConfig.templates);
+        if (Array.isArray(oldConfig.groups)) store.set('groups', oldConfig.groups);
+        if (oldConfig.theme) store.set('theme', oldConfig.theme);
+        if (oldConfig.defaultShell) store.set('defaultShell', oldConfig.defaultShell);
+        console.log(`Migrated ${oldConfig.workspaces.length} workspace(s) from ${path.basename(oldConfigPath)}`);
+        return; // Stop after first successful migration
+      }
+    } catch (err) {
+      console.warn(`Failed to migrate from ${path.basename(oldConfigPath)}:`, err);
     }
-  } catch (err) {
-    console.warn('Failed to migrate old config:', err);
   }
 })();
 

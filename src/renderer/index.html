@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:;">
-  <title>KiteTerm</title>
+  <title>Tarca Terminal</title>
   <link rel="stylesheet" href="./styles/xterm.css">
   <link rel="stylesheet" href="./styles/global.css">
 </head>
@@ -62,6 +62,11 @@
         <span id="status-cost"></span>
         <span id="status-lines"></span>
       </div>
+      <div id="status-shield" class="status-shield hidden">
+        <span id="shield-icon">&#x1F6E1;</span>
+        <span id="shield-label">Shield</span>
+        <span id="shield-count">0</span>
+      </div>
       <div id="status-shortcuts">Ctrl+P switcher | Ctrl+F find | Ctrl+1-9 tabs</div>
     </div>
 
@@ -69,50 +74,137 @@
     <div id="modal-overlay" class="hidden">
       <div id="workspace-modal">
         <h2 id="modal-title">New Workspace</h2>
-        <!-- #8: Template selector -->
-        <div class="form-group" id="template-group">
-          <label for="ws-template">Template</label>
-          <select id="ws-template">
-            <option value="">None (blank)</option>
-          </select>
+
+        <!-- Mode toggle (hidden during edit) -->
+        <div id="scaffold-mode-toggle" class="scaffold-mode-toggle">
+          <button id="existing-mode-btn" class="scaffold-mode-btn active">Open Existing Folder</button>
+          <button id="scaffold-mode-btn" class="scaffold-mode-btn">Create New Project</button>
         </div>
-        <div class="form-group">
-          <label for="ws-name">Name</label>
-          <input type="text" id="ws-name" placeholder="My Project" autocomplete="off" />
-        </div>
-        <div class="form-group">
-          <label for="ws-cwd">Folder</label>
-          <div class="folder-input">
-            <input type="text" id="ws-cwd" placeholder="C:\path\to\project" readonly />
-            <button id="ws-browse-btn">Browse</button>
+
+        <!-- ===== Existing Folder Form ===== -->
+        <div id="existing-form">
+          <!-- #8: Template selector -->
+          <div class="form-group" id="template-group">
+            <label for="ws-template">Template</label>
+            <select id="ws-template">
+              <option value="">None (blank)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="ws-name">Name</label>
+            <input type="text" id="ws-name" placeholder="My Project" autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label for="ws-cwd">Folder</label>
+            <div class="folder-input">
+              <input type="text" id="ws-cwd" placeholder="C:\path\to\project" readonly />
+              <button id="ws-browse-btn">Browse</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="ws-command">Startup Command</label>
+            <input type="text" id="ws-command" placeholder="claude" autocomplete="off" />
+          </div>
+          <!-- #3: Group field -->
+          <div class="form-group">
+            <label for="ws-group">Group</label>
+            <input type="text" id="ws-group" placeholder="(optional)" autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label>Color</label>
+            <div id="ws-colors" class="color-picker"></div>
+          </div>
+          <div class="form-group checkbox-group">
+            <input type="checkbox" id="ws-autostart" checked />
+            <label for="ws-autostart">Auto-start on launch</label>
+          </div>
+          <div class="form-group" id="resume-mode-group">
+            <label for="ws-resume-mode">Session Resume</label>
+            <select id="ws-resume-mode">
+              <option value="continue">Continue latest session (recommended)</option>
+              <option value="resume">Resume exact session (by ID)</option>
+              <option value="off">Always start fresh</option>
+            </select>
+          </div>
+          <!-- #9: Auto-restart fields -->
+          <div class="form-group checkbox-group">
+            <input type="checkbox" id="ws-autorestart" />
+            <label for="ws-autorestart">Auto-restart on crash</label>
+          </div>
+          <div class="form-group" id="max-restarts-group" style="display: none;">
+            <label for="ws-max-restarts">Max restarts</label>
+            <input type="number" id="ws-max-restarts" value="3" min="1" max="10" />
+          </div>
+          <!-- Repo scan policy (visible only when Shield with scanning is detected) -->
+          <div class="form-group" id="scan-policy-group" style="display: none;">
+            <label for="ws-scan-policy">Repo Scan Policy</label>
+            <select id="ws-scan-policy">
+              <option value="off">Off</option>
+              <option value="manual">Manual (scan on demand)</option>
+              <option value="enforce-before-spawn">Enforce before launch</option>
+            </select>
+          </div>
+          <div class="form-group checkbox-group" id="scan-background-group" style="display: none;">
+            <input type="checkbox" id="ws-scan-background" />
+            <label for="ws-scan-background">Enable background scans</label>
+          </div>
+          <div class="form-group checkbox-group" id="scan-bypass-group" style="display: none;">
+            <input type="checkbox" id="ws-scan-bypass" checked />
+            <label for="ws-scan-bypass">Allow force-launch on scan failure</label>
+          </div>
+          <div class="form-group" id="scan-threshold-group" style="display: none;">
+            <label for="ws-scan-threshold">Fail Threshold</label>
+            <select id="ws-scan-threshold">
+              <option value="low">Any finding (low+)</option>
+              <option value="medium">Medium and above</option>
+              <option value="high" selected>High and above</option>
+              <option value="critical">Critical only</option>
+            </select>
+          </div>
+          <div class="form-group" id="scan-exclude-group" style="display: none;">
+            <label for="ws-scan-exclude">Exclude Patterns (one per line)</label>
+            <textarea id="ws-scan-exclude" rows="3" placeholder="node_modules/**&#10;*.test.ts&#10;fixtures/"></textarea>
           </div>
         </div>
-        <div class="form-group">
-          <label for="ws-command">Startup Command</label>
-          <input type="text" id="ws-command" placeholder="claude" autocomplete="off" />
+
+        <!-- ===== Scaffold Form (Create New Project) ===== -->
+        <div id="scaffold-form" style="display: none;">
+          <div class="form-group">
+            <label>Template</label>
+            <div id="scaffold-template-grid" class="scaffold-template-grid"></div>
+          </div>
+          <div class="form-group">
+            <label for="scaffold-project-name">Project Name</label>
+            <input type="text" id="scaffold-project-name" placeholder="my-project" autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label for="scaffold-parent-dir">Parent Directory</label>
+            <div class="folder-input">
+              <input type="text" id="scaffold-parent-dir" placeholder="C:\Users\dev\projects" readonly />
+              <button id="scaffold-browse-btn">Browse</button>
+            </div>
+          </div>
+          <div id="scaffold-variables" class="scaffold-variables"></div>
+          <div class="scaffold-options">
+            <div class="form-group checkbox-group">
+              <input type="checkbox" id="scaffold-git-init" checked />
+              <label for="scaffold-git-init">Run git init</label>
+            </div>
+            <div class="form-group checkbox-group">
+              <input type="checkbox" id="scaffold-run-claude" checked />
+              <label for="scaffold-run-claude">Start claude after creation</label>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Color</label>
+            <div id="scaffold-colors" class="color-picker"></div>
+          </div>
+          <div class="form-group">
+            <label for="scaffold-group">Group</label>
+            <input type="text" id="scaffold-group" placeholder="(optional)" autocomplete="off" />
+          </div>
         </div>
-        <!-- #3: Group field -->
-        <div class="form-group">
-          <label for="ws-group">Group</label>
-          <input type="text" id="ws-group" placeholder="(optional)" autocomplete="off" />
-        </div>
-        <div class="form-group">
-          <label>Color</label>
-          <div id="ws-colors" class="color-picker"></div>
-        </div>
-        <div class="form-group checkbox-group">
-          <input type="checkbox" id="ws-autostart" checked />
-          <label for="ws-autostart">Auto-start on launch</label>
-        </div>
-        <!-- #9: Auto-restart fields -->
-        <div class="form-group checkbox-group">
-          <input type="checkbox" id="ws-autorestart" />
-          <label for="ws-autorestart">Auto-restart on crash</label>
-        </div>
-        <div class="form-group" id="max-restarts-group" style="display: none;">
-          <label for="ws-max-restarts">Max restarts</label>
-          <input type="number" id="ws-max-restarts" value="3" min="1" max="10" />
-        </div>
+
         <div class="modal-actions">
           <button id="modal-cancel" class="btn-secondary">Cancel</button>
           <button id="modal-save" class="btn-primary">Save</button>
@@ -132,59 +224,214 @@
     <div id="settings-overlay" class="hidden">
       <div id="settings-modal">
         <h2>Settings</h2>
-        <div class="form-group">
-          <label for="set-font-size">Font Size</label>
-          <input type="number" id="set-font-size" min="8" max="32" value="14" />
-        </div>
-        <div class="form-group">
-          <label for="set-font-family">Font Family</label>
-          <input type="text" id="set-font-family" value="" autocomplete="off" />
-        </div>
-        <div class="form-group">
-          <label for="set-default-shell">Default Shell</label>
-          <input type="text" id="set-default-shell" value="" autocomplete="off" />
-        </div>
-        <div class="form-group">
-          <label for="set-scrollback">Scrollback Limit</label>
-          <input type="number" id="set-scrollback" min="1000" max="100000" value="10000" />
-        </div>
-        <div class="form-group">
-          <label for="set-theme">Theme</label>
-          <select id="set-theme">
-            <option value="dark">Dark</option>
-            <option value="light">Light</option>
-          </select>
-        </div>
-        <div class="form-group checkbox-group">
-          <input type="checkbox" id="set-notify-idle" />
-          <label for="set-notify-idle">Notify on command completion (when window is blurred)</label>
-        </div>
-        <div class="form-group">
-          <label for="set-notify-delay">Notification Delay (seconds)</label>
-          <input type="number" id="set-notify-delay" min="1" max="60" value="5" />
-        </div>
-        <!-- Phase 4: API Integration -->
-        <div class="settings-section-divider"></div>
-        <h3 class="settings-section-title">Anthropic API Integration</h3>
-        <div class="form-group">
-          <label for="set-api-key">API Key</label>
-          <div class="folder-input">
-            <input type="password" id="set-api-key" placeholder="sk-ant-..." autocomplete="off" />
-            <button id="set-api-test" class="btn-secondary">Test</button>
+        <div class="settings-layout">
+          <nav class="settings-nav">
+            <button class="settings-nav-item active" data-settings-section="general">General</button>
+            <button class="settings-nav-item" data-settings-section="api">API</button>
+            <button class="settings-nav-item settings-nav-shield" data-settings-section="shield">Shield</button>
+          </nav>
+          <div class="settings-content">
+            <!-- General Section -->
+            <div id="settings-section-general" class="settings-section">
+              <div class="form-group">
+                <label for="set-font-size">Font Size</label>
+                <input type="number" id="set-font-size" min="8" max="32" value="14" />
+              </div>
+              <div class="form-group">
+                <label for="set-font-family">Font Family</label>
+                <input type="text" id="set-font-family" value="" autocomplete="off" />
+              </div>
+              <div class="form-group">
+                <label for="set-default-shell">Default Shell</label>
+                <input type="text" id="set-default-shell" value="" autocomplete="off" />
+              </div>
+              <div class="form-group">
+                <label for="set-scrollback">Scrollback Limit</label>
+                <input type="number" id="set-scrollback" min="1000" max="100000" value="10000" />
+              </div>
+              <div class="form-group">
+                <label for="set-theme">Theme</label>
+                <select id="set-theme">
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                </select>
+              </div>
+              <div class="form-group checkbox-group">
+                <input type="checkbox" id="set-notify-idle" />
+                <label for="set-notify-idle">Notify on command completion (when window is blurred)</label>
+              </div>
+              <div class="form-group">
+                <label for="set-notify-delay">Notification Delay (seconds)</label>
+                <input type="number" id="set-notify-delay" min="1" max="60" value="5" />
+              </div>
+            </div>
+
+            <!-- API Section -->
+            <div id="settings-section-api" class="settings-section hidden">
+              <div class="form-group">
+                <label for="set-api-key">API Key</label>
+                <div class="folder-input">
+                  <input type="password" id="set-api-key" placeholder="sk-ant-..." autocomplete="off" />
+                  <button id="set-api-test" class="btn-secondary">Test</button>
+                </div>
+                <span id="set-api-status" class="settings-api-status"></span>
+              </div>
+              <div class="form-group">
+                <label for="set-api-org">Organization ID (optional)</label>
+                <input type="text" id="set-api-org" placeholder="org-..." autocomplete="off" />
+              </div>
+              <div class="form-group checkbox-group">
+                <input type="checkbox" id="set-api-enabled" />
+                <label for="set-api-enabled">Enable org-level usage in dashboard</label>
+              </div>
+            </div>
+
+            <!-- Shield Section (Policy + Custom Patterns combined) -->
+            <div id="settings-section-shield" class="settings-section hidden">
+              <div id="shield-policy-section">
+                <h3 class="settings-section-title">Policy</h3>
+                <!-- Default action -->
+                <div class="form-group">
+                  <label for="shield-default-action">Default Action</label>
+                  <select id="shield-default-action">
+                    <option value="monitor">Monitor</option>
+                    <option value="warn">Warn</option>
+                    <option value="block">Block</option>
+                  </select>
+                </div>
+
+                <!-- Global rules table -->
+                <div class="shield-policy-section">
+                  <label>Global Rules by Category</label>
+                  <table class="shield-rules-table" id="shield-rules-table">
+                    <thead>
+                      <tr><th>Category</th><th>Action</th></tr>
+                    </thead>
+                    <tbody id="shield-rules-tbody"></tbody>
+                  </table>
+                  <button id="shield-rules-save" class="btn-primary" style="margin-top: 8px;">Save Rules</button>
+                </div>
+
+                <!-- Workspace overrides -->
+                <div class="shield-policy-section" style="margin-top: 16px;">
+                  <label>Workspace Overrides</label>
+                  <div id="shield-ws-overrides"></div>
+                  <div style="display: flex; gap: 8px; margin-top: 8px;">
+                    <select id="shield-ws-override-select" style="flex: 1;">
+                      <option value="">Select workspace...</option>
+                    </select>
+                    <button id="shield-ws-override-add" class="btn-secondary">Add Override</button>
+                  </div>
+                </div>
+
+                <!-- License -->
+                <div class="shield-policy-section" style="margin-top: 16px;">
+                  <label>License</label>
+                  <div id="shield-license-info" class="shield-license-info">
+                    Checking license...
+                  </div>
+                  <div class="shield-license-install">
+                    <input type="text" id="shield-license-token" placeholder="Paste license JWT token..." autocomplete="off" />
+                    <button id="shield-license-install-btn" class="btn-primary">Install</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Repo Scan Provider settings -->
+              <div class="settings-section-divider"></div>
+
+              <div id="shield-scan-provider-section">
+                <h3 class="settings-section-title">Repo Scan Provider</h3>
+                <div id="scan-provider-status" class="scan-provider-status">
+                  <span id="scan-provider-name">Not configured</span>
+                  <span id="scan-provider-indicator" class="scan-provider-indicator"></span>
+                </div>
+                <div id="scan-provider-fields"></div>
+                <div class="shield-pattern-form-actions" style="margin-top: 8px;">
+                  <button id="scan-provider-save" class="btn-primary">Save &amp; Test</button>
+                </div>
+                <span id="scan-provider-result" class="settings-api-status"></span>
+              </div>
+
+              <div class="settings-section-divider"></div>
+
+              <div id="shield-patterns-section">
+                <h3 class="settings-section-title">Custom Patterns</h3>
+                <div id="shield-patterns-table-wrap">
+                  <table id="shield-patterns-table">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Pattern</th>
+                        <th>Type</th>
+                        <th>Action</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="shield-patterns-tbody"></tbody>
+                  </table>
+                </div>
+                <div id="shield-pattern-empty" class="shield-pattern-empty">No custom patterns defined</div>
+                <!-- Inline add/edit form -->
+                <div id="shield-pattern-form" class="shield-pattern-form hidden">
+                  <div class="form-group">
+                    <label for="sp-name">Pattern Name</label>
+                    <input type="text" id="sp-name" placeholder="e.g. Project Nighthawk" autocomplete="off" />
+                  </div>
+                  <div class="form-group">
+                    <label for="sp-pattern">Pattern</label>
+                    <input type="text" id="sp-pattern" placeholder="Text or regex pattern" autocomplete="off" />
+                  </div>
+                  <div class="shield-pattern-form-row">
+                    <div class="form-group">
+                      <label for="sp-type">Type</label>
+                      <select id="sp-type">
+                        <option value="keyword">Keyword</option>
+                        <option value="regex">Regex</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label for="sp-action">Action</label>
+                      <select id="sp-action">
+                        <option value="monitor">Monitor</option>
+                        <option value="warn">Warn</option>
+                        <option value="block">Block</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label for="sp-description">Description (optional)</label>
+                    <input type="text" id="sp-description" placeholder="What this pattern detects" autocomplete="off" />
+                  </div>
+                  <div class="shield-pattern-form-actions">
+                    <button id="sp-cancel" class="btn-secondary">Cancel</button>
+                    <button id="sp-save" class="btn-primary">Save Pattern</button>
+                  </div>
+                </div>
+                <!-- Action bar -->
+                <div class="shield-pattern-actions">
+                  <button id="sp-add-btn" class="btn-primary">+ Add Pattern</button>
+                  <button id="sp-test-toggle" class="btn-secondary">Test Pattern</button>
+                  <button id="sp-import-btn" class="btn-secondary">Import Policy</button>
+                  <button id="sp-export-btn" class="btn-secondary">Export Policy</button>
+                </div>
+                <!-- Test panel -->
+                <div id="shield-test-panel" class="shield-test-panel hidden">
+                  <div class="form-group">
+                    <label for="sp-test-text">Sample Text</label>
+                    <textarea id="sp-test-text" rows="4" placeholder="Paste sample text to test against patterns..."></textarea>
+                  </div>
+                  <button id="sp-test-run" class="btn-primary">Run Test</button>
+                  <div id="sp-test-results" class="shield-test-results"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="modal-actions">
+              <button id="settings-cancel" class="btn-secondary">Cancel</button>
+              <button id="settings-save" class="btn-primary">Save</button>
+            </div>
           </div>
-          <span id="set-api-status" class="settings-api-status"></span>
-        </div>
-        <div class="form-group">
-          <label for="set-api-org">Organization ID (optional)</label>
-          <input type="text" id="set-api-org" placeholder="org-..." autocomplete="off" />
-        </div>
-        <div class="form-group checkbox-group">
-          <input type="checkbox" id="set-api-enabled" />
-          <label for="set-api-enabled">Enable org-level usage in dashboard</label>
-        </div>
-        <div class="modal-actions">
-          <button id="settings-cancel" class="btn-secondary">Cancel</button>
-          <button id="settings-save" class="btn-primary">Save</button>
         </div>
       </div>
     </div>
@@ -243,6 +490,55 @@
           <h3>Organization Usage (API)</h3>
           <div id="dash-org-content"></div>
         </div>
+
+        <!-- Shield Audit Tab -->
+        <div class="dashboard-section" id="dash-shield-section" style="display: none;">
+          <h3>Shield Detections</h3>
+          <div class="dash-shield-header">
+            <div class="dash-shield-cards">
+              <div class="dash-card" style="min-width: auto;">
+                <div class="dash-card-label">Total Detections</div>
+                <div class="dash-card-value" id="dash-shield-total">0</div>
+              </div>
+              <div class="dash-card" style="min-width: auto;">
+                <div class="dash-card-label">Blocked</div>
+                <div class="dash-card-value" id="dash-shield-blocked" style="color: var(--red);">0</div>
+              </div>
+              <div class="dash-card" style="min-width: auto;">
+                <div class="dash-card-label">Warned</div>
+                <div class="dash-card-value" id="dash-shield-warned" style="color: var(--orange);">0</div>
+              </div>
+              <div class="dash-card" style="min-width: auto;">
+                <div class="dash-card-label">Log Integrity</div>
+                <div class="dash-card-value" id="dash-shield-integrity">--</div>
+              </div>
+            </div>
+            <div class="dash-shield-actions">
+              <button id="dash-shield-export" class="btn-secondary">Export Logs</button>
+              <button id="dash-shield-verify" class="btn-secondary">Verify Integrity</button>
+            </div>
+          </div>
+          <h4 style="margin-top: 16px;">Recent Detections</h4>
+          <div class="dash-shield-filters">
+            <select id="dash-shield-filter-action">
+              <option value="">All Actions</option>
+              <option value="blocked">Blocked</option>
+              <option value="warned">Warned</option>
+              <option value="monitored">Monitored</option>
+            </select>
+            <select id="dash-shield-filter-category">
+              <option value="">All Categories</option>
+              <option value="pii">PII</option>
+              <option value="credential">Credential</option>
+              <option value="classification">Classification</option>
+              <option value="code_secret">Code Secret</option>
+              <option value="data_pattern">Data Pattern</option>
+              <option value="custom">Custom</option>
+            </select>
+            <input type="text" id="dash-shield-filter-search" placeholder="Search detections..." autocomplete="off" />
+          </div>
+          <div id="dash-shield-timeline" class="shield-audit-timeline"></div>
+        </div>
       </div>
     </div>
 
@@ -253,6 +549,39 @@
         <h2>No workspaces yet</h2>
         <p>Create a workspace to get started with Claude Code</p>
         <button id="empty-add-btn" class="btn-primary">+ New Workspace</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shield Detection Toast -->
+  <div id="shield-toast-container"></div>
+
+  <!-- Shield Warn Prompt Modal -->
+  <div id="shield-warn-overlay" class="hidden">
+    <div id="shield-warn-modal">
+      <div class="shield-warn-icon">&#x1F6E1;</div>
+      <h3 id="shield-warn-title">Shield Warning</h3>
+      <p id="shield-warn-message"></p>
+      <div id="shield-warn-details" class="shield-warn-details"></div>
+      <div class="shield-warn-actions">
+        <button id="shield-warn-cancel" class="btn-secondary">Cancel</button>
+        <button id="shield-warn-continue" class="btn-primary">Continue Anyway</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scan Results Modal -->
+  <div id="scan-results-overlay" class="hidden">
+    <div id="scan-results-panel">
+      <div class="scan-results-header">
+        <h3 id="scan-results-title">Scan Results</h3>
+        <button id="scan-results-close" class="btn-secondary">Close</button>
+      </div>
+      <div id="scan-results-summary" class="scan-results-summary"></div>
+      <div id="scan-results-list" class="scan-results-list"></div>
+      <div class="scan-results-actions">
+        <button id="scan-results-rescan" class="btn-secondary">Fix &amp; Rescan</button>
+        <button id="scan-results-force" class="btn-primary">Force Launch</button>
       </div>
     </div>
   </div>

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHANNELS, PtySpawnRequest, Workspace, WorkspaceTemplate, WorkspaceGroup, AppConfig, AppSettings, SerializedPaneNode, ClaudeMetricsEntry, ClaudeAuthStatus, ClaudeAnalytics, AnthropicApiConfig, OrgUsageReport } from '../shared/types';
+import { IPC_CHANNELS, PtySpawnRequest, Workspace, WorkspaceTemplate, WorkspaceGroup, AppConfig, AppSettings, SerializedPaneNode, ClaudeMetricsEntry, ClaudeAuthStatus, ClaudeAnalytics, AnthropicApiConfig, OrgUsageReport, ScaffoldTemplateInfo, ScaffoldRequest, ScaffoldResult, ScanResult, ScanProgress, ScanProviderConfig, ScanProviderConfigField, ScanRequest } from '../shared/types';
 
 // Expose a safe API to the renderer process
 contextBridge.exposeInMainWorld('api', {
@@ -75,6 +75,12 @@ contextBridge.exposeInMainWorld('api', {
     delete: (name: string) => ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_DELETE, name),
   },
 
+  // --- Scaffold ---
+  scaffold: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.SCAFFOLD_LIST),
+    create: (request: ScaffoldRequest) => ipcRenderer.invoke(IPC_CHANNELS.SCAFFOLD_CREATE, request),
+  },
+
   // --- Claude Code Integration ---
   claude: {
     getMetrics: (workspaceId: string) =>
@@ -97,6 +103,11 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.on('shortcut:analytics-dashboard', handler);
       return () => ipcRenderer.removeListener('shortcut:analytics-dashboard', handler);
     },
+    onSessionUpdate: (callback: (data: { workspaceId: string; sessionId: string; source: string }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(IPC_CHANNELS.CLAUDE_SESSION_UPDATE, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.CLAUDE_SESSION_UPDATE, handler);
+    },
   },
 
   // --- Anthropic API ---
@@ -109,6 +120,88 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.invoke(IPC_CHANNELS.ANTHROPIC_API_TEST, apiKey) as Promise<{ success: boolean; error?: string }>,
     getUsage: (apiKey: string, period?: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.ANTHROPIC_API_GET_USAGE, { apiKey, period }) as Promise<OrgUsageReport | { error: string }>,
+  },
+
+  // --- Shield Plugin ---
+  shield: {
+    onStatus: (callback: (status: { enabled: boolean; detectionCount: number; licenseValid: boolean; lastDetection?: any }) => void) => {
+      const handler = (_event: any, status: any) => callback(status);
+      ipcRenderer.on('shield:status', handler);
+      return () => ipcRenderer.removeListener('shield:status', handler);
+    },
+    onDetection: (callback: (data: { workspaceId: string; detection: any }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on('shield:detection', handler);
+      return () => ipcRenderer.removeListener('shield:detection', handler);
+    },
+    onWarnPrompt: (callback: (data: { workspaceId: string; data: string; detection: any }) => void) => {
+      const handler = (_event: any, data: any) => callback(data);
+      ipcRenderer.on(IPC_CHANNELS.SHIELD_WARN_PROMPT, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.SHIELD_WARN_PROMPT, handler);
+    },
+    respondToWarn: (workspaceId: string, allow: boolean) =>
+      ipcRenderer.send(IPC_CHANNELS.SHIELD_WARN_RESPONSE, { workspaceId, allow }),
+    getPolicy: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_POLICY_GET),
+    upsertPattern: (pattern: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_POLICY_UPSERT_PATTERN, pattern),
+    deletePattern: (patternId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_POLICY_DELETE_PATTERN, patternId),
+    testPattern: (pattern: string, isRegex: boolean, sampleText: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_POLICY_TEST_PATTERN, { pattern, isRegex, sampleText }),
+    exportPolicy: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_POLICY_EXPORT),
+    importPolicy: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_POLICY_IMPORT),
+    // Policy rule management
+    updateRules: (rules: any[]) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_POLICY_UPDATE_RULES, rules),
+    updateDefaultAction: (action: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_POLICY_UPDATE_DEFAULT, action),
+    updateWorkspaceOverride: (workspaceId: string, override: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_POLICY_UPDATE_WORKSPACE, { workspaceId, override }),
+    deleteWorkspaceOverride: (workspaceId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_POLICY_DELETE_WORKSPACE, workspaceId),
+    // License
+    getLicenseStatus: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_LICENSE_STATUS),
+    installLicense: (token: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_LICENSE_INSTALL, token),
+    // Audit
+    queryAuditLogs: (date?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_AUDIT_QUERY, date),
+    exportAuditLogs: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_AUDIT_EXPORT),
+    verifyAuditIntegrity: (date?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_AUDIT_VERIFY, date),
+    // Repo scanning
+    startScan: (workspaceId: string, options?: { incremental?: boolean }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_SCAN_START, options ? { workspaceId, ...options } satisfies ScanRequest : workspaceId),
+    onScanInvalidate: (callback: (workspaceId: string) => void) => {
+      const handler = (_event: any, workspaceId: string) => callback(workspaceId);
+      ipcRenderer.on(IPC_CHANNELS.SHIELD_SCAN_INVALIDATE, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.SHIELD_SCAN_INVALIDATE, handler);
+    },
+    cancelScan: (jobId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_SCAN_CANCEL, jobId),
+    getLastScanResult: (workspaceId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_SCAN_GET_LAST, workspaceId),
+    onScanProgress: (callback: (progress: ScanProgress) => void) => {
+      const handler = (_event: any, progress: ScanProgress) => callback(progress);
+      ipcRenderer.on(IPC_CHANNELS.SHIELD_SCAN_PROGRESS, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.SHIELD_SCAN_PROGRESS, handler);
+    },
+    onScanResult: (callback: (result: ScanResult) => void) => {
+      const handler = (_event: any, result: ScanResult) => callback(result);
+      ipcRenderer.on(IPC_CHANNELS.SHIELD_SCAN_RESULT_PUSH, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.SHIELD_SCAN_RESULT_PUSH, handler);
+    },
+    getScanProviderStatus: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_SCAN_PROVIDER_STATUS) as Promise<ScanProviderConfig>,
+    getScanProviderSchema: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_SCAN_PROVIDER_SCHEMA) as Promise<ScanProviderConfigField[]>,
+    configureScanProvider: (config: Record<string, string>) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SHIELD_SCAN_PROVIDER_CONFIGURE, config) as Promise<{ success: boolean; error?: string }>,
   },
 
   // --- Shortcut listeners ---
@@ -244,6 +337,10 @@ export interface ElectronAPI {
     create: (template: WorkspaceTemplate) => Promise<WorkspaceTemplate>;
     delete: (name: string) => Promise<boolean>;
   };
+  scaffold: {
+    list: () => Promise<ScaffoldTemplateInfo[]>;
+    create: (request: ScaffoldRequest) => Promise<ScaffoldResult>;
+  };
   claude: {
     getMetrics: (workspaceId: string) => Promise<ClaudeMetricsEntry | null>;
     setupHook: () => Promise<{ success: boolean; error?: string }>;
@@ -252,12 +349,44 @@ export interface ElectronAPI {
     getAnalytics: () => Promise<ClaudeAnalytics>;
     clearAnalytics: () => Promise<boolean>;
     onAnalyticsDashboard: (cb: () => void) => () => void;
+    onSessionUpdate: (callback: (data: { workspaceId: string; sessionId: string; source: string }) => void) => () => void;
   };
   anthropic: {
     getConfig: () => Promise<AnthropicApiConfig>;
     setConfig: (config: AnthropicApiConfig) => Promise<boolean>;
     testConnection: (apiKey: string) => Promise<{ success: boolean; error?: string }>;
     getUsage: (apiKey: string, period?: string) => Promise<OrgUsageReport | { error: string }>;
+  };
+  shield: {
+    onStatus: (callback: (status: { enabled: boolean; detectionCount: number; licenseValid: boolean; lastDetection?: any }) => void) => () => void;
+    onDetection: (callback: (data: { workspaceId: string; detection: any }) => void) => () => void;
+    onWarnPrompt: (callback: (data: { workspaceId: string; data: string; detection: any }) => void) => () => void;
+    respondToWarn: (workspaceId: string, allow: boolean) => void;
+    getPolicy: () => Promise<any>;
+    upsertPattern: (pattern: any) => Promise<any>;
+    deletePattern: (patternId: string) => Promise<any>;
+    testPattern: (pattern: string, isRegex: boolean, sampleText: string) => Promise<Array<{ match: string; index: number }> | { error: string }>;
+    exportPolicy: () => Promise<{ success?: boolean; canceled?: boolean; error?: string; path?: string }>;
+    importPolicy: () => Promise<{ success?: boolean; canceled?: boolean; error?: string; policy?: any }>;
+    updateRules: (rules: any[]) => Promise<any>;
+    updateDefaultAction: (action: string) => Promise<any>;
+    updateWorkspaceOverride: (workspaceId: string, override: any) => Promise<any>;
+    deleteWorkspaceOverride: (workspaceId: string) => Promise<any>;
+    getLicenseStatus: () => Promise<any>;
+    installLicense: (token: string) => Promise<any>;
+    queryAuditLogs: (date?: string) => Promise<any>;
+    exportAuditLogs: () => Promise<any>;
+    verifyAuditIntegrity: (date?: string) => Promise<any>;
+    // Repo scanning
+    startScan: (workspaceId: string, options?: { incremental?: boolean }) => Promise<{ jobId: string } | { error: string }>;
+    cancelScan: (jobId: string) => Promise<{ success: boolean } | { error: string }>;
+    getLastScanResult: (workspaceId: string) => Promise<ScanResult | null>;
+    onScanInvalidate: (callback: (workspaceId: string) => void) => () => void;
+    onScanProgress: (callback: (progress: ScanProgress) => void) => () => void;
+    onScanResult: (callback: (result: ScanResult) => void) => () => void;
+    getScanProviderStatus: () => Promise<ScanProviderConfig>;
+    getScanProviderSchema: () => Promise<ScanProviderConfigField[]>;
+    configureScanProvider: (config: Record<string, string>) => Promise<{ success: boolean; error?: string }>;
   };
   shortcuts: {
     onNewWorkspace: (cb: () => void) => () => void;

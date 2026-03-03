@@ -8,8 +8,9 @@ import {
   Detection,
   ShieldStatusInfo,
   PLUGIN_SEARCH_PATHS,
+  PLUGIN_API_VERSION,
 } from '../shared/plugin-types';
-import { IPC_CHANNELS } from '../shared/types';
+import { IPC_CHANNELS, ScanProgress, ScanResult } from '../shared/types';
 import { getWorkspaces } from './store';
 
 // ============================================
@@ -49,7 +50,7 @@ function tryRegistryPath(): string | null {
   try {
     const { execSync } = require('child_process');
     const result = execSync(
-      'reg query "HKLM\\SOFTWARE\\KiteTerm" /v ShieldPath 2>nul',
+      'reg query "HKLM\\SOFTWARE\\TarcaTerminal" /v ShieldPath 2>nul',
       { encoding: 'utf8', timeout: 3000 }
     );
     const match = result.match(/ShieldPath\s+REG_SZ\s+(.+)/);
@@ -63,7 +64,6 @@ function tryRegistryPath(): string | null {
 function findPluginPath(): string | null {
   // Check standard locations
   const searchPaths = resolveSearchPaths();
-
   for (const dir of searchPaths) {
     const manifestPath = path.join(dir, 'package.json');
     if (fs.existsSync(manifestPath)) {
@@ -71,7 +71,7 @@ function findPluginPath(): string | null {
         const manifest: PluginManifest = JSON.parse(
           fs.readFileSync(manifestPath, 'utf8')
         );
-        if (manifest['kiteterm-plugin'] === 'shield' && manifest.main) {
+        if (((manifest as any)['tarca-plugin'] === 'shield' || manifest['kiteterm-plugin'] === 'shield') && manifest.main) {
           return dir;
         }
       } catch {
@@ -123,7 +123,16 @@ export async function loadShieldPlugin(window: BrowserWindow): Promise<boolean> 
 
     const plugin: ShieldPlugin = createPlugin();
 
-    // Build the context object that Shield uses to interact with KiteTerm
+    // API version compatibility check — warn but still attempt to load
+    if (plugin.apiVersion !== PLUGIN_API_VERSION) {
+      console.warn(
+        `[Shield] API version mismatch: plugin=${plugin.apiVersion}, host=${PLUGIN_API_VERSION}. ` +
+        `Shield may not work correctly. Please update ${plugin.apiVersion < PLUGIN_API_VERSION ? 'Shield' : 'Tarca Terminal'}.`
+      );
+      // Continue loading — Shield may still work with minor version differences
+    }
+
+    // Build the context object that Shield uses to interact with Tarca Terminal
     const context: PluginContext = {
       userDataPath: app.getPath('userData'),
       appVersion: app.getVersion(),
@@ -137,6 +146,16 @@ export async function loadShieldPlugin(window: BrowserWindow): Promise<boolean> 
       emitStatus: (status: ShieldStatusInfo) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('shield:status', status);
+        }
+      },
+      emitScanProgress: (progress: ScanProgress) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC_CHANNELS.SHIELD_SCAN_PROGRESS, progress);
+        }
+      },
+      emitScanResult: (result: ScanResult) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC_CHANNELS.SHIELD_SCAN_RESULT_PUSH, result);
         }
       },
     };

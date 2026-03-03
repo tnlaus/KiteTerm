@@ -5,8 +5,10 @@ import { getConfig, saveWindowState, getSettings } from './store';
 import { createTray, updateTrayMenu, destroyTray } from './tray';
 import { registerShortcuts, registerWindowShortcuts, unregisterShortcuts } from './shortcuts';
 import { killAllPtys } from './pty-manager';
-import { stopAllMetricsWatchers } from './claude-metrics';
-import { loadShieldPlugin, unloadShieldPlugin } from './plugin-loader';
+import { stopAllMetricsWatchers, stopAllSessionWatchers } from './claude-metrics';
+import { loadShieldPlugin, unloadShieldPlugin, getShieldPlugin } from './plugin-loader';
+import { startBackgroundScans, stopBackgroundScans } from './scan-scheduler';
+import { stopAllGitWatchers } from './git-watcher';
 
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
@@ -42,7 +44,7 @@ function createWindow(): void {
     minWidth: 600,
     minHeight: 400,
     backgroundColor: getSettings().theme === 'light' ? '#FFFFFF' : '#0D1117',
-    title: 'KiteTerm',
+    title: 'Tarca Terminal',
     icon: path.join(__dirname, '../../assets/icon.png'),
     show: false, // Show after ready-to-show
     webPreferences: {
@@ -117,7 +119,21 @@ app.whenReady().then(() => {
 
   // Load Shield plugin if installed (no-op if not found)
   if (mainWindow) {
-    loadShieldPlugin(mainWindow).catch(() => {});
+    loadShieldPlugin(mainWindow).then((loaded) => {
+      if (loaded) {
+        // Start background scans after Shield is loaded
+        startBackgroundScans();
+      }
+    }).catch((err) => { console.error('[Shield] Load error:', err); });
+
+    // Re-emit shield status after renderer is ready (fixes race condition
+    // where initial status is emitted before renderer listeners are set up)
+    mainWindow.webContents.on('did-finish-load', () => {
+      const shield = getShieldPlugin();
+      if (shield && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('shield:status', shield.getStatus());
+      }
+    });
   }
 
   // System tray
@@ -143,9 +159,12 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  stopBackgroundScans();
+  stopAllGitWatchers();
   unloadShieldPlugin().catch(() => {});
   killAllPtys();
   stopAllMetricsWatchers();
+  stopAllSessionWatchers();
   unregisterShortcuts();
   destroyTray();
 });

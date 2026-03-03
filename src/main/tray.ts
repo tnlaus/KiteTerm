@@ -27,7 +27,7 @@ export function createTray(getWindow: () => BrowserWindow | null): Tray {
     tray = new Tray(createPlaceholderIcon());
   }
 
-  tray.setToolTip('KiteTerm');
+  tray.setToolTip('Tarca Terminal');
   updateTrayMenu(getWindow);
 
   // Click tray icon to show/hide window

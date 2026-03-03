@@ -3,7 +3,7 @@ import * as path from 'path';
 import { app, BrowserWindow } from 'electron';
 import { execFile } from 'child_process';
 import { IPC_CHANNELS, ClaudeMetrics, ClaudeMetricsEntry, ClaudeAuthStatus, ClaudeAnalytics } from '../shared/types';
-import { getWorkspaces } from './store';
+import { getWorkspaces, updateWorkspace } from './store';
 
 // ============================================
 // Metrics directory + file paths
@@ -152,15 +152,34 @@ export function getHookScriptPath(): string {
   return possiblePaths[0];
 }
 
+export function getSessionHookScriptPath(): string {
+  const appPath = app.getAppPath();
+  const possiblePaths = [
+    path.join(process.resourcesPath, 'assets', 'claude-session-hook.js'),
+    path.join(appPath, '..', 'assets', 'claude-session-hook.js'),
+    path.join(appPath, 'assets', 'claude-session-hook.js'),
+    path.join(__dirname, '..', '..', 'assets', 'claude-session-hook.js'),
+  ];
+
+  for (const p of possiblePaths) {
+    if (fs.existsSync(p)) return p;
+  }
+
+  return possiblePaths[0];
+}
+
 export function isHookInstalled(): boolean {
   const settingsPath = getClaudeSettingsPath();
   if (!fs.existsSync(settingsPath)) return false;
 
   try {
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    const hookCommand = settings?.hooks?.['StatusLine command'];
-    if (!hookCommand) return false;
-    return hookCommand.includes('claude-statusline-hook');
+    // Check new statusLine format first, then legacy hooks format
+    const statusLineCmd = settings?.statusLine?.command;
+    if (statusLineCmd && statusLineCmd.includes('claude-statusline-hook')) return true;
+    const legacyCmd = settings?.hooks?.['StatusLine command'];
+    if (legacyCmd && legacyCmd.includes('claude-statusline-hook')) return true;
+    return false;
   } catch {
     return false;
   }
@@ -192,14 +211,37 @@ export function setupStatuslineHook(): { success: boolean; error?: string } {
       }
     }
 
+    // Set up statusLine (top-level key, not under hooks)
+    const normalizedPath = hookScriptPath.replace(/\\/g, '/');
+    settings.statusLine = {
+      type: 'command',
+      command: `node "${normalizedPath}"`,
+    };
+
+    // Remove legacy "StatusLine command" from hooks if present (causes settings errors)
+    if (settings.hooks?.['StatusLine command']) {
+      delete settings.hooks['StatusLine command'];
+    }
+
     // Set up the hooks section
     if (!settings.hooks) {
       settings.hooks = {};
     }
 
-    // Use node to run the hook script, with proper path quoting
-    const normalizedPath = hookScriptPath.replace(/\\/g, '/');
-    settings.hooks['StatusLine command'] = `node "${normalizedPath}"`;
+    // Install SessionStart hook for session resume
+    const sessionHookPath = getSessionHookScriptPath().replace(/\\/g, '/');
+    if (!settings.hooks['SessionStart']) {
+      settings.hooks['SessionStart'] = [];
+    }
+    const sessionHooks = settings.hooks['SessionStart'] as any[];
+    const alreadyInstalled = sessionHooks.some((group: any) =>
+      group.hooks?.some((h: any) => h.command?.includes('claude-session-hook'))
+    );
+    if (!alreadyInstalled) {
+      sessionHooks.push({
+        hooks: [{ type: 'command', command: `node "${sessionHookPath}"` }]
+      });
+    }
 
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
     return { success: true };
@@ -215,7 +257,9 @@ export function setupStatuslineHook(): { success: boolean; error?: string } {
 export function checkClaudeAuth(): Promise<ClaudeAuthStatus> {
   return new Promise((resolve) => {
     // Try to run `claude auth status --json`
-    execFile('claude', ['auth', 'status', '--json'], { timeout: 10000 }, (err, stdout) => {
+    // Use shell: true on Windows so .cmd files (like claude.cmd) are resolved
+    const opts = { timeout: 10000, ...(process.platform === 'win32' ? { shell: true } : {}) };
+    execFile('claude', ['auth', 'status', '--json'], opts, (err, stdout) => {
       if (err) {
         // claude CLI not found or errored
         if (err.message?.includes('ENOENT') || err.message?.includes('not found')) {
@@ -398,5 +442,93 @@ export function clearAnalytics(): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+// ============================================
+// Session file watcher — captures Claude session IDs for resume
+// ============================================
+
+interface SessionWatcherState {
+  watcher: fs.FSWatcher;
+  filePath: string;
+}
+
+const activeSessionWatchers = new Map<string, SessionWatcherState>();
+
+function getSessionFilePath(workspaceId: string): string {
+  const safe = workspaceId.replace(/[:<>"|?*]/g, '_');
+  return path.join(getMetricsDir(), `${safe}.session`);
+}
+
+function readAndEmitSession(filePath: string, workspaceId: string, window: BrowserWindow): void {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const content = fs.readFileSync(filePath, 'utf8').trim();
+    if (!content) return;
+
+    const data = JSON.parse(content);
+    if (!data.session_id) return;
+
+    // Persist to workspace config
+    updateWorkspace(workspaceId, { lastClaudeSessionId: data.session_id });
+
+    // Notify renderer
+    if (window && !window.isDestroyed()) {
+      window.webContents.send(IPC_CHANNELS.CLAUDE_SESSION_UPDATE, {
+        workspaceId,
+        sessionId: data.session_id,
+        source: data.source || 'unknown',
+      });
+    }
+  } catch {
+    // Skip malformed or locked files
+  }
+}
+
+export function startSessionWatcher(workspaceId: string, window: BrowserWindow): void {
+  if (activeSessionWatchers.has(workspaceId)) return;
+
+  const dir = getMetricsDir();
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  const filePath = getSessionFilePath(workspaceId);
+
+  // Only watch for new writes — the session ID is already persisted in workspace config
+  // by updateWorkspace(), so we don't re-read stale .session files on PTY spawn.
+  // This prevents re-populating a session ID that was cleared after a resume failure.
+
+  const watcher = fs.watch(dir, (eventType, filename) => {
+    if (!filename) return;
+    const expected = path.basename(filePath);
+    if (filename === expected && (eventType === 'change' || eventType === 'rename')) {
+      readAndEmitSession(filePath, workspaceId, window);
+    }
+  });
+
+  watcher.on('error', () => {
+    stopSessionWatcher(workspaceId);
+  });
+
+  activeSessionWatchers.set(workspaceId, { watcher, filePath });
+}
+
+export function stopSessionWatcher(workspaceId: string): void {
+  const state = activeSessionWatchers.get(workspaceId);
+  if (state) {
+    try {
+      state.watcher.close();
+    } catch {
+      // Already closed
+    }
+    activeSessionWatchers.delete(workspaceId);
+  }
+}
+
+export function stopAllSessionWatchers(): void {
+  for (const [id] of activeSessionWatchers) {
+    stopSessionWatcher(id);
   }
 }

@@ -1,0 +1,10 @@
+{
+  "name": "Node.js",
+  "description": "TypeScript Node.js project with Claude Code integration",
+  "icon": "📦",
+  "auto_commands": ["git init", "npm install", "claude"],
+  "variables": [
+    { "key": "PROJECT_NAME", "prompt": "Project name" },
+    { "key": "DESCRIPTION", "prompt": "Project description", "default": "A Node.js project" }
+  ]
+}

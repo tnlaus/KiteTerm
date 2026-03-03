@@ -45,7 +45,30 @@ async function build() {
     fs.copyFileSync(xtermCssSource, path.join(stylesDir, 'xterm.css'));
   }
 
+  // Copy scaffold templates to dist
+  const templatesSource = path.join(__dirname, 'assets/templates');
+  const templatesDest = path.join(__dirname, 'dist/assets/templates');
+  if (fs.existsSync(templatesSource)) {
+    copyDirRecursive(templatesSource, templatesDest);
+  }
+
   console.log('Renderer bundled successfully');
+}
+
+function copyDirRecursive(src, dest) {
+  if (!fs.existsSync(dest)) {
+    fs.mkdirSync(dest, { recursive: true });
+  }
+  const entries = fs.readdirSync(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirRecursive(srcPath, destPath);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
 }
 
 build().catch((err) => {

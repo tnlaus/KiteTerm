@@ -1,4 +1,4 @@
-# KiteTerm
+# Tarca Terminal
 
 ## What This Is
 
@@ -106,7 +106,7 @@ This prevents stale processes from locking files or ports. Do this every time yo
 
 ## Shield Plugin Architecture
 
-KiteTerm supports a runtime-discovered plugin called **KiteTerm Shield** (paid, closed source). The free app works identically without it.
+Tarca Terminal supports a runtime-discovered plugin called **Tarca Shield** (paid, closed source). The free app works identically without it.
 
 ### Plugin System Files
 
@@ -142,6 +142,21 @@ Both hooks are in `src/main/pty-manager.ts` (main process, full Node.js access):
 - Shield runs in the main process, not the renderer (full Node.js access for file I/O, crypto)
 - If Shield is not installed, the interception hooks are skipped (zero overhead)
 - See `SHIELD.md` for the full architecture spec including detection patterns, policy engine, and audit logging
+
+## Repo Scanning (Layer 2 DLP)
+
+Shield's PTY interception (Layer 1) catches data in terminal I/O. Layer 2 adds pre-launch repo scanning:
+
+- Per-workspace policy: `off` | `manual` | `enforce-before-spawn`
+- Scans run via Shield plugin's `scanWorkspace()` — actual scanner is in the private Shield repo
+- Results cached with 5-minute staleness; git branch switches invalidate cache (`git-watcher.ts` monitors `.git/HEAD`)
+- Background periodic scans configurable per workspace
+- Incremental scanning support: only changed files rescanned when `incremental: true`
+- Exclusion patterns: per-workspace glob patterns to skip directories/files
+- Severity threshold: configurable minimum severity to fail a scan (`scanFailThreshold`)
+- Force-launch bypass: `allowScanBypass` policy flag controls whether users can skip scan enforcement
+- IPC channels: `shield:scan:*` — see `src/shared/types.ts` for full list
+- Scan provider settings (Netskope tenant URL + API token) configured in Settings → Shield
 
 ## Conventions
 

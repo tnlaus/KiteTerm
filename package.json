@@ -1,5 +1,5 @@
 {
-  "name": "kiteterm",
+  "name": "tarca-terminal",
   "version": "0.1.0",
   "description": "Multi-session workspace terminal manager for Claude Code power users",
   "main": "dist/main/index.js",
@@ -24,6 +24,7 @@
     "uuid": "^9.0.0"
   },
   "devDependencies": {
+    "@kiteterm/plugin-types": "file:../kiteterm-plugin-types",
     "@types/node": "^20.11.0",
     "@types/uuid": "^9.0.7",
     "electron": "^28.1.0",
@@ -33,8 +34,8 @@
     "typescript": "^5.3.3"
   },
   "build": {
-    "appId": "com.tnlaus.kiteterm",
-    "productName": "KiteTerm",
+    "appId": "com.tarca.terminal",
+    "productName": "Tarca Terminal",
     "directories": {
       "output": "release"
     },
@@ -58,6 +59,16 @@
       {
         "from": "assets/",
         "to": "assets/"
+      }
+    ],
+    "extraResources:enterprise": [
+      {
+        "from": "assets/",
+        "to": "assets/"
+      },
+      {
+        "from": "../tarca-shield/release/tarca-shield/",
+        "to": "plugins/tarca-shield/"
       }
     ]
   }

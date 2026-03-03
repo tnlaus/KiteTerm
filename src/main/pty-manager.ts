@@ -1,8 +1,8 @@
 import * as pty from 'node-pty';
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, ipcMain } from 'electron';
 import { IPC_CHANNELS, PtySpawnRequest } from '../shared/types';
 import { getDefaultShell } from './store';
-import { getMetricsDir, startMetricsWatcher, stopMetricsWatcher } from './claude-metrics';
+import { getMetricsDir, startMetricsWatcher, stopMetricsWatcher, startSessionWatcher, stopSessionWatcher } from './claude-metrics';
 import { getShieldPlugin } from './plugin-loader';
 
 interface ManagedPty {
@@ -12,6 +12,31 @@ interface ManagedPty {
 }
 
 const activePtys = new Map<string, ManagedPty>();
+
+// Pending warn prompts: workspaceId → { data, resolve }
+// When Shield returns action='warn', we hold the data and wait for user response
+interface PendingWarn {
+  data: string;
+  resolve: (allow: boolean) => void;
+}
+const pendingWarns = new Map<string, PendingWarn>();
+
+// Guard to prevent duplicate registration of the warn response handler
+let warnResponseHandlerRegistered = false;
+
+// Register warn response handler (called once from registerIpcHandlers)
+export function registerWarnResponseHandler(): void {
+  if (warnResponseHandlerRegistered) return;
+  warnResponseHandlerRegistered = true;
+
+  ipcMain.on(IPC_CHANNELS.SHIELD_WARN_RESPONSE, (_event, { workspaceId, allow }: { workspaceId: string; allow: boolean }) => {
+    const pending = pendingWarns.get(workspaceId);
+    if (pending) {
+      pendingWarns.delete(workspaceId);
+      pending.resolve(allow);
+    }
+  });
+}
 
 export function spawnPty(
   request: PtySpawnRequest,
@@ -39,10 +64,11 @@ export function spawnPty(
     ...env,
     // Force color support in terminals
     COLORTERM: 'truecolor',
-    TERM_PROGRAM: 'kiteterm',
+    TERM_PROGRAM: 'tarca-terminal',
     // Claude Code integration: inject metrics env vars
-    KITETERM_METRICS_DIR: getMetricsDir(),
-    KITETERM_WORKSPACE_ID: workspaceId,
+    // Use base workspace ID (strip :pane-N suffix) so session files use clean filenames
+    TARCA_METRICS_DIR: getMetricsDir(),
+    TARCA_WORKSPACE_ID: workspaceId.split(':')[0],
   };
 
   try {
@@ -100,6 +126,8 @@ export function spawnPty(
 
     // Start metrics watcher for this workspace
     startMetricsWatcher(workspaceId, window);
+    // Session watcher uses base workspace ID (without :pane-N suffix)
+    startSessionWatcher(workspaceId.split(':')[0], window);
 
     return { pid: ptyProcess.pid };
   } catch (err: any) {
@@ -107,7 +135,7 @@ export function spawnPty(
   }
 }
 
-export function writeToPty(workspaceId: string, data: string): void {
+export function writeToPty(workspaceId: string, data: string, window?: BrowserWindow | null): void {
   const managed = activePtys.get(workspaceId);
   if (managed?.isAlive) {
     // Shield input interception hook
@@ -118,6 +146,48 @@ export function writeToPty(workspaceId: string, data: string): void {
         direction: 'input', timestamp: Date.now(),
       });
       if (result.data === null) return; // Blocked by Shield
+
+      // Warn flow: pause data and prompt the user
+      if (result.detection?.action === 'warn' && window && !window.isDestroyed()) {
+        const heldData = result.data;
+        window.webContents.send(IPC_CHANNELS.SHIELD_WARN_PROMPT, {
+          workspaceId,
+          data: heldData,
+          detection: result.detection,
+        });
+
+        // Auto-cancel any existing pending warn for this workspace (prevents race condition)
+        const existingWarn = pendingWarns.get(workspaceId);
+        if (existingWarn) {
+          pendingWarns.delete(workspaceId);
+          existingWarn.resolve(false);
+        }
+
+        // Wait for user response asynchronously
+        const warnPromise = new Promise<boolean>((resolve) => {
+          pendingWarns.set(workspaceId, { data: heldData, resolve });
+          // Auto-cancel after 30 seconds if no response
+          setTimeout(() => {
+            if (pendingWarns.has(workspaceId)) {
+              pendingWarns.delete(workspaceId);
+              resolve(false);
+            }
+          }, 30000);
+        });
+
+        warnPromise.then((allow) => {
+          // Log user's response
+          if (shield.logWarnResponse) {
+            shield.logWarnResponse(workspaceId, allow ? 'continued' : 'cancelled', result.detection!);
+          }
+
+          if (allow && managed.isAlive) {
+            managed.process.write(heldData);
+          }
+        });
+        return;
+      }
+
       data = result.data;
     }
 
@@ -147,6 +217,14 @@ export function killPty(workspaceId: string): void {
     managed.isAlive = false;
     activePtys.delete(workspaceId);
     stopMetricsWatcher(workspaceId);
+    stopSessionWatcher(workspaceId.split(':')[0]);
+
+    // Clean up any pending warn prompt for this workspace
+    const pending = pendingWarns.get(workspaceId);
+    if (pending) {
+      pendingWarns.delete(workspaceId);
+      pending.resolve(false);
+    }
   }
 }
 

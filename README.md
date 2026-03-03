@@ -1,17 +1,17 @@
 <div align="center">
 
-# KiteTerm
+# Tarca Terminal
 
 **Multi-session workspace manager for Claude Code power users**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-58A6FF.svg?style=flat-square)](LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078D6.svg?style=flat-square&logo=windows)](https://github.com/tnlaus/KiteTerm/releases)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078D6.svg?style=flat-square&logo=windows)](https://github.com/tnlaus/Tarca Terminal/releases)
 [![Built with Electron](https://img.shields.io/badge/Built_with-Electron-47848F.svg?style=flat-square&logo=electron)](https://www.electronjs.org/)
 [![Claude Code](https://img.shields.io/badge/Made_for-Claude_Code-D4A574.svg?style=flat-square)](https://docs.anthropic.com/en/docs/claude-code)
 
 Stop juggling terminal windows. Define your workspaces once, and every Claude Code session opens in the right folder, every time — even after a reboot.
 
-[**Download Latest Release**](https://github.com/tnlaus/KiteTerm/releases)
+[**Download Latest Release**](https://github.com/tnlaus/Tarca Terminal/releases)
 
 ---
 
@@ -20,7 +20,7 @@ Stop juggling terminal windows. Define your workspaces once, and every Claude Co
   Replace with actual screenshots once the app is running.
 -->
 
-<img src="docs/screenshot-hero.png" alt="KiteTerm" width="800">
+<img src="docs/screenshot-hero.png" alt="Tarca Terminal" width="800">
 
 *Tabbed terminal sessions with persistent workspaces, split panes, and keyboard shortcuts.*
 
@@ -39,7 +39,7 @@ If you're running multiple Claude Code instances across different projects, you 
 
 ## The Solution
 
-KiteTerm lets you define **workspaces** — a name, a folder, and an optional startup command. Each workspace gets a tab with a full terminal. Close the app, reboot, come back — everything reopens exactly where you left it.
+Tarca Terminal lets you define **workspaces** — a name, a folder, and an optional startup command. Each workspace gets a tab with a full terminal. Close the app, reboot, come back — everything reopens exactly where you left it.
 
 ### Features
 
@@ -64,13 +64,13 @@ KiteTerm lets you define **workspaces** — a name, a folder, and an optional st
 
 ### Download
 
-Grab the latest `.exe` from [**Releases**](https://github.com/tnlaus/KiteTerm/releases).
+Grab the latest `.exe` from [**Releases**](https://github.com/tnlaus/Tarca Terminal/releases).
 
 ### Or build from source
 
 ```bash
-git clone https://github.com/tnlaus/KiteTerm.git
-cd KiteTerm
+git clone https://github.com/tnlaus/Tarca Terminal.git
+cd Tarca Terminal
 npm install
 npx electron-rebuild
 npm start
@@ -132,7 +132,7 @@ The terminal session itself can't survive a reboot (that's an OS limitation). Bu
 The codebase is cross-platform (Electron + node-pty work everywhere), but we currently only build and test on Windows. macOS/Linux support is on the roadmap — PRs welcome.
 
 **Is my data sent anywhere?**
-No. Everything runs locally. Workspace configs are stored in `%APPDATA%/kiteterm-config/`. No telemetry, no analytics, no network calls.
+No. Everything runs locally. Workspace configs are stored in `%APPDATA%/tarca-config/`. No telemetry, no analytics, no network calls.
 
 **Why not just use Windows Terminal?**
 Windows Terminal is great, but it doesn't have the concept of persistent named workspaces with auto-start commands. You can't define "open PowerShell in this folder and run `claude`" as a reusable, restorable workspace. That's the gap this fills.
@@ -151,11 +151,11 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Whether it's a bug fix, feature, docs improvement, or just a typo — all contributions are appreciated.
 
-## KiteTerm Shield
+## Tarca Shield
 
-**KiteTerm Shield** adds DLP, audit logging, and compliance features for enterprise and government teams. Detect sensitive data (PII, credentials, classification markers) flowing through AI coding sessions, enforce security policies per workspace, and generate tamper-evident audit trails for ISM compliance.
+**Tarca Shield** adds DLP, audit logging, and compliance features for enterprise and government teams. Detect sensitive data (PII, credentials, classification markers) flowing through AI coding sessions, enforce security policies per workspace, and generate tamper-evident audit trails for ISM compliance.
 
-[Learn more](https://tnlit.com.au/kiteterm-shield) | [Contact sales](mailto:hello@tnlit.com.au)
+[Learn more](https://tnlit.com.au/tarca-shield) | [Contact sales](mailto:hello@tnlit.com.au)
 
 ## License
 

@@ -1,0 +1,10 @@
+{
+  "name": "Python",
+  "description": "Python project with pyproject.toml and Claude Code integration",
+  "icon": "🐍",
+  "auto_commands": ["git init", "claude"],
+  "variables": [
+    { "key": "PROJECT_NAME", "prompt": "Project name" },
+    { "key": "DESCRIPTION", "prompt": "Project description", "default": "A Python project" }
+  ]
+}

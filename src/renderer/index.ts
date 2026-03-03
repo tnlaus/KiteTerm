@@ -2,7 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
-import { Workspace, WORKSPACE_COLORS, TerminalStatus, WorkspaceTemplate, WorkspaceGroup, SerializedPaneNode, SerializedPaneLeaf, SerializedPaneSplit, AppSettings, ClaudeMetricsEntry, ClaudeAnalytics, AnthropicApiConfig } from '../shared/types';
+import { Workspace, WORKSPACE_COLORS, TerminalStatus, WorkspaceTemplate, WorkspaceGroup, SerializedPaneNode, SerializedPaneLeaf, SerializedPaneSplit, AppSettings, ClaudeMetricsEntry, ClaudeAnalytics, AnthropicApiConfig, ScaffoldTemplateInfo, ScanProgress, ScanResult, ScanFinding, ScanProviderConfigField, ScanRequest } from '../shared/types';
 
 // Type-safe access to the preload API
 const api = window.api;
@@ -49,6 +49,11 @@ interface TabState {
   // #9: Auto-restart
   restartCount: number;
   restartStabilityTimer: ReturnType<typeof setTimeout> | null;
+  // Session resume tracking
+  _resumeAttemptTime: number | null;
+  // Shield detection badge
+  shieldDetectionCount: number;
+  shieldHasBlock: boolean;
 }
 
 const tabs = new Map<string, TabState>();
@@ -79,10 +84,27 @@ let currentSettings: AppSettings = {
 
 // Notification on command completion state
 const paneIdleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const lastOutputSnippet = new Map<string, string>();
 let windowIsFocused = true;
 
 // Claude Code metrics state
 const claudeMetrics = new Map<string, ClaudeMetricsEntry>();
+
+// Shield state
+let shieldActive = false;
+let shieldDetectionCount = 0;
+
+// Scaffold state
+let scaffoldMode = false;
+let scaffoldTemplates: ScaffoldTemplateInfo[] = [];
+let selectedScaffold: ScaffoldTemplateInfo | null = null;
+let scaffoldSelectedColor = WORKSPACE_COLORS[0];
+
+// Scan state
+let shieldSupportsScanning = false;
+const scanOverlays = new Map<string, HTMLElement>(); // workspaceId → overlay element
+const scanStates = new Map<string, { jobId?: string; progress?: ScanProgress; result?: ScanResult }>(); // workspaceId → scan state
+const pendingScanSpawns = new Set<string>(); // workspaceIds waiting for scan to auto-spawn
 
 // ============================================
 // DOM References
@@ -95,6 +117,9 @@ const statusDot = document.getElementById('status-dot')!;
 const statusText = document.getElementById('status-text')!;
 const statusCwd = document.getElementById('status-cwd')!;
 const statusShell = document.getElementById('status-shell')!;
+const statusShield = document.getElementById('status-shield')!;
+const shieldCountEl = document.getElementById('shield-count')!;
+const shieldToastContainer = document.getElementById('shield-toast-container')!;
 const modalOverlay = document.getElementById('modal-overlay')!;
 const modalTitle = document.getElementById('modal-title')!;
 const wsNameInput = document.getElementById('ws-name') as HTMLInputElement;
@@ -119,6 +144,10 @@ const wsGroupInput = document.getElementById('ws-group') as HTMLInputElement;
 // #8: Template selector
 const wsTemplateSelect = document.getElementById('ws-template') as HTMLSelectElement;
 const templateGroup = document.getElementById('template-group')!;
+
+// Session resume mode
+const wsResumeModeSelect = document.getElementById('ws-resume-mode') as HTMLSelectElement;
+const resumeModeGroup = document.getElementById('resume-mode-group')!;
 
 // #7: Search bar
 const searchBar = document.getElementById('search-bar')!;
@@ -161,6 +190,51 @@ const dashWorkspaceTbody = document.getElementById('dash-workspace-tbody')!;
 const dashChart = document.getElementById('dash-chart')!;
 const dashOrgSection = document.getElementById('dash-org-section')!;
 const dashOrgContent = document.getElementById('dash-org-content')!;
+
+// Scaffold DOM refs
+const scaffoldModeToggle = document.getElementById('scaffold-mode-toggle')!;
+const existingModeBtn = document.getElementById('existing-mode-btn')!;
+const scaffoldModeBtn = document.getElementById('scaffold-mode-btn')!;
+const existingForm = document.getElementById('existing-form')!;
+const scaffoldForm = document.getElementById('scaffold-form')!;
+const scaffoldTemplateGrid = document.getElementById('scaffold-template-grid')!;
+const scaffoldProjectNameInput = document.getElementById('scaffold-project-name') as HTMLInputElement;
+const scaffoldParentDirInput = document.getElementById('scaffold-parent-dir') as HTMLInputElement;
+const scaffoldBrowseBtn = document.getElementById('scaffold-browse-btn')!;
+const scaffoldVariablesDiv = document.getElementById('scaffold-variables')!;
+const scaffoldGitInitInput = document.getElementById('scaffold-git-init') as HTMLInputElement;
+const scaffoldRunClaudeInput = document.getElementById('scaffold-run-claude') as HTMLInputElement;
+const scaffoldColorsDiv = document.getElementById('scaffold-colors')!;
+const scaffoldGroupInput = document.getElementById('scaffold-group') as HTMLInputElement;
+
+// Scan results modal DOM refs
+const scanResultsOverlay = document.getElementById('scan-results-overlay')!;
+const scanResultsTitle = document.getElementById('scan-results-title')!;
+const scanResultsSummary = document.getElementById('scan-results-summary')!;
+const scanResultsList = document.getElementById('scan-results-list')!;
+const scanResultsClose = document.getElementById('scan-results-close')!;
+const scanResultsRescan = document.getElementById('scan-results-rescan')!;
+const scanResultsForce = document.getElementById('scan-results-force')!;
+
+// Workspace modal scan fields
+const scanPolicyGroup = document.getElementById('scan-policy-group')!;
+const wsScanPolicySelect = document.getElementById('ws-scan-policy') as HTMLSelectElement;
+const scanBackgroundGroup = document.getElementById('scan-background-group')!;
+const wsScanBackgroundInput = document.getElementById('ws-scan-background') as HTMLInputElement;
+const scanBypassGroup = document.getElementById('scan-bypass-group')!;
+const wsScanBypassInput = document.getElementById('ws-scan-bypass') as HTMLInputElement;
+const scanThresholdGroup = document.getElementById('scan-threshold-group')!;
+const wsScanThresholdSelect = document.getElementById('ws-scan-threshold') as HTMLSelectElement;
+const scanExcludeGroup = document.getElementById('scan-exclude-group')!;
+const wsScanExcludeTextarea = document.getElementById('ws-scan-exclude') as HTMLTextAreaElement;
+
+// Scan provider settings DOM refs
+const scanProviderSection = document.getElementById('shield-scan-provider-section')!;
+const scanProviderName = document.getElementById('scan-provider-name')!;
+const scanProviderIndicator = document.getElementById('scan-provider-indicator')!;
+const scanProviderFields = document.getElementById('scan-provider-fields')!;
+const scanProviderSaveBtn = document.getElementById('scan-provider-save')!;
+const scanProviderResult = document.getElementById('scan-provider-result')!;
 
 // ============================================
 // Terminal Factory
@@ -257,6 +331,38 @@ function createPaneLeaf(workspaceId: string, paneIndex: number): PaneLeaf {
     if (tab && tab.activePaneId !== paneId) {
       setActivePane(workspaceId, paneId);
     }
+  });
+
+  // Right-click context menu on terminal pane
+  container.addEventListener('contextmenu', (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showTerminalContextMenu(e.clientX, e.clientY, workspaceId, paneId);
+  });
+
+  // Ctrl+C: copy if selection exists, else send SIGINT
+  // Ctrl+V: paste from clipboard
+  terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+    if (e.type !== 'keydown') return true;
+
+    if (e.ctrlKey && e.key === 'c' && !e.shiftKey && !e.altKey) {
+      const selection = terminal.getSelection();
+      if (selection) {
+        navigator.clipboard.writeText(selection);
+        terminal.clearSelection();
+        return false;
+      }
+      return true;
+    }
+
+    if (e.ctrlKey && e.key === 'v' && !e.shiftKey && !e.altKey) {
+      navigator.clipboard.readText().then(text => {
+        if (text) api.pty.write(paneId, text);
+      });
+      return false;
+    }
+
+    return true;
   });
 
   return {
@@ -637,6 +743,24 @@ function findSiblingInNode(tab: TabState, node: PaneNode, target: PaneLeaf): Pan
   return null;
 }
 
+function getEffectiveStartupCommand(workspace: Workspace): string {
+  const cmd = workspace.startupCommand || '';
+  const mode = workspace.sessionResumeMode ?? 'continue';
+
+  // Only modify commands where "claude" is the executable (first token)
+  if (!/^claude(\s|$)/.test(cmd.trim())) return cmd;
+  if (mode === 'off') return cmd;
+  if (cmd.includes('--resume') || cmd.includes('--continue')) return cmd;
+
+  if (mode === 'continue') {
+    return cmd.trim().replace(/^claude/, 'claude --continue');
+  }
+
+  // mode === 'resume': use stored session ID if available
+  if (!workspace.lastClaudeSessionId) return cmd;
+  return cmd.trim().replace(/^claude/, `claude --resume ${workspace.lastClaudeSessionId}`);
+}
+
 async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf, startupDelayMs = 600): Promise<void> {
   const tab = tabs.get(workspaceId);
   if (!tab) return;
@@ -660,6 +784,15 @@ async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf, startupDel
     rows: pane.terminal.rows,
   });
 
+  if ('scanRequired' in result && (result as any).scanRequired) {
+    pane.status = 'idle';
+    pane.terminal.writeln('\r\n\x1b[33m[Shield] Repo scan required before launch...\x1b[0m\r\n');
+    pendingScanSpawns.add(workspaceId);
+    showScanOverlay(workspaceId);
+    triggerScan(workspaceId);
+    return;
+  }
+
   if ('error' in result) {
     pane.terminal.writeln(`\r\n\x1b[31mFailed to start terminal: ${result.error}\x1b[0m`);
     pane.status = 'dead';
@@ -671,7 +804,41 @@ async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf, startupDel
 
   // Send startup command for main pane only (pane-0)
   if (pane.id.endsWith(':pane-0') && tab.workspace.startupCommand) {
-    api.pty.writeCommand(pane.id, tab.workspace.startupCommand, startupDelayMs);
+    const command = getEffectiveStartupCommand(tab.workspace);
+    const isResuming = command !== tab.workspace.startupCommand;
+    if (isResuming) {
+      tab._resumeAttemptTime = Date.now();
+      showToast('\u21BB Resuming Session', `${tab.workspace.name}: picking up where you left off`, 'var(--cyan, #39D2C0)', 5000);
+
+      // Watch PTY output for resume failure — only for 'resume' mode (stale ID).
+      // 'continue' mode gracefully starts a new session if none exists, so no watcher needed.
+      let resumeOutputBuffer = '';
+      const resumeCheckCleanup = api.pty.onData(({ workspaceId: paneId, data }) => {
+        if (paneId !== pane.id || !tab._resumeAttemptTime) return;
+        if ((tab.workspace.sessionResumeMode ?? 'continue') !== 'resume') return;
+        resumeOutputBuffer += data;
+        if (resumeOutputBuffer.includes('No conversation found') || resumeOutputBuffer.includes('No session found')) {
+          tab._resumeAttemptTime = null;
+          tab.workspace.lastClaudeSessionId = undefined;
+          api.workspace.update(workspaceId, { lastClaudeSessionId: undefined });
+          showToast('\u26A0 Resume Failed', `${tab.workspace.name}: starting fresh session`, 'var(--orange, #D29922)', 5000);
+          // Send fresh claude command after a short delay
+          setTimeout(() => {
+            if (tab.workspace.startupCommand) {
+              api.pty.writeCommand(pane.id, tab.workspace.startupCommand, 500);
+            }
+          }, 1500);
+          resumeCheckCleanup();
+        }
+      });
+
+      // Stop watching after 15s regardless (session started successfully)
+      setTimeout(() => {
+        if (tab._resumeAttemptTime) tab._resumeAttemptTime = null;
+        resumeCheckCleanup();
+      }, 15000);
+    }
+    api.pty.writeCommand(pane.id, command, startupDelayMs);
   }
 
   if (pane.resizeDisposable) pane.resizeDisposable.dispose();
@@ -679,6 +846,290 @@ async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf, startupDel
     api.pty.resize(pane.id, cols, rows);
   });
 }
+
+// ============================================
+// Repo Scan Overlay & Results
+// ============================================
+
+function showScanOverlay(workspaceId: string, incremental: boolean = false): void {
+  const wrapper = terminalContainer.querySelector(`.terminal-wrapper[data-id="${workspaceId}"]`);
+  if (!wrapper) return;
+
+  // Remove existing overlay if any
+  hideScanOverlay(workspaceId);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'scan-overlay';
+  overlay.innerHTML = `
+    <div class="scan-overlay-title">${incremental ? 'Scanning changes...' : 'Scanning repository...'}</div>
+    <div class="scan-progress-bar"><div class="scan-progress-fill" style="width: 0%"></div></div>
+    <div class="scan-overlay-stats">
+      <span>Files: <strong class="scan-files-count">0</strong></span>
+      <span>Findings: <strong class="scan-findings-count">0</strong></span>
+    </div>
+    <div class="scan-overlay-file"></div>
+    <button class="btn-secondary scan-cancel-btn">Cancel</button>
+  `;
+
+  const cancelBtn = overlay.querySelector('.scan-cancel-btn')!;
+  cancelBtn.addEventListener('click', () => {
+    const state = scanStates.get(workspaceId);
+    if (state?.jobId) {
+      api.shield.cancelScan(state.jobId);
+    }
+    hideScanOverlay(workspaceId);
+    pendingScanSpawns.delete(workspaceId);
+  });
+
+  wrapper.appendChild(overlay);
+  scanOverlays.set(workspaceId, overlay);
+
+  // Update tab scan indicator
+  updateTabScanBadge(workspaceId, 'scanning');
+}
+
+function updateScanOverlay(workspaceId: string, progress: ScanProgress): void {
+  const overlay = scanOverlays.get(workspaceId);
+  if (!overlay) return;
+
+  const fill = overlay.querySelector('.scan-progress-fill') as HTMLElement;
+  const filesCount = overlay.querySelector('.scan-files-count')!;
+  const findingsCount = overlay.querySelector('.scan-findings-count')!;
+  const fileLabel = overlay.querySelector('.scan-overlay-file')!;
+  const title = overlay.querySelector('.scan-overlay-title')!;
+
+  if (fill) fill.style.width = `${Math.min(progress.percent, 100)}%`;
+  filesCount.textContent = `${progress.filesScanned}/${progress.filesFound}`;
+  findingsCount.textContent = String(progress.findingsCount);
+  if (progress.currentFile) {
+    fileLabel.textContent = progress.currentFile;
+  }
+  if (progress.phase === 'walking') {
+    title.textContent = 'Discovering files...';
+  } else if (progress.phase === 'scanning') {
+    title.textContent = 'Scanning repository...';
+  }
+}
+
+function hideScanOverlay(workspaceId: string): void {
+  const overlay = scanOverlays.get(workspaceId);
+  if (overlay) {
+    overlay.remove();
+    scanOverlays.delete(workspaceId);
+  }
+}
+
+async function triggerScan(workspaceId: string, options?: { incremental?: boolean }): Promise<void> {
+  const result = await api.shield.startScan(workspaceId, options);
+  if ('error' in result) {
+    hideScanOverlay(workspaceId);
+    showToast('Scan Failed', (result as any).error, 'var(--red)', 5000);
+    pendingScanSpawns.delete(workspaceId);
+    return;
+  }
+  scanStates.set(workspaceId, { jobId: (result as any).jobId });
+}
+
+function handleScanProgress(progress: ScanProgress): void {
+  const state = scanStates.get(progress.workspaceId) || {};
+  state.progress = progress;
+  scanStates.set(progress.workspaceId, state);
+  updateScanOverlay(progress.workspaceId, progress);
+}
+
+function handleScanResult(result: ScanResult): void {
+  const state = scanStates.get(result.workspaceId) || {};
+  state.result = result;
+  scanStates.set(result.workspaceId, state);
+
+  hideScanOverlay(result.workspaceId);
+
+  if (result.passed) {
+    updateTabScanBadge(result.workspaceId, 'passed');
+    const incrementalLabel = result.incremental ? ` (incremental, ${result.changedFiles ?? result.filesScanned} changed)` : '';
+    showToast('Scan Passed', `${result.filesScanned} files scanned${incrementalLabel}, no issues found`, 'var(--green)', 3000);
+
+    // Auto-retry spawn if this was an enforce-before-spawn gate
+    if (pendingScanSpawns.has(result.workspaceId)) {
+      pendingScanSpawns.delete(result.workspaceId);
+      const tab = tabs.get(result.workspaceId);
+      if (tab) {
+        const pane = getActivePane(tab);
+        if (pane) {
+          // Short delay to ensure scan result is persisted before the gate re-checks
+          setTimeout(() => spawnPaneTerminal(result.workspaceId, pane), 200);
+        }
+      }
+    }
+  } else {
+    updateTabScanBadge(result.workspaceId, 'failed');
+    showScanResultsModal(result);
+  }
+}
+
+function showScanResultsModal(result: ScanResult): void {
+  const tab = tabs.get(result.workspaceId);
+  const wsName = tab?.workspace.name || result.workspaceId;
+
+  // Hide Force Launch button if bypass is disabled by policy
+  const allowBypass = tab?.workspace.scanConfig?.allowScanBypass !== false; // default true
+  scanResultsForce.style.display = allowBypass ? '' : 'none';
+
+  scanResultsTitle.textContent = `Scan Results: ${wsName}`;
+
+  // Summary
+  const critCount = result.findings.filter(f => f.severity === 'critical').length;
+  const highCount = result.findings.filter(f => f.severity === 'high').length;
+  const medCount = result.findings.filter(f => f.severity === 'medium').length;
+  const lowCount = result.findings.filter(f => f.severity === 'low').length;
+  const incrementalNote = result.incremental ? ` <span style="color: var(--text-muted);">(incremental — ${result.changedFiles ?? result.filesScanned} changed)</span>` : '';
+  scanResultsSummary.innerHTML = `
+    <span>${result.filesScanned} files scanned${incrementalNote}</span>
+    <span>${result.findings.length} finding${result.findings.length !== 1 ? 's' : ''}</span>
+    ${critCount > 0 ? `<span style="color: var(--red);">${critCount} critical</span>` : ''}
+    ${highCount > 0 ? `<span style="color: var(--orange);">${highCount} high</span>` : ''}
+    ${medCount > 0 ? `<span style="color: var(--accent);">${medCount} medium</span>` : ''}
+    ${lowCount > 0 ? `<span style="color: var(--text-muted);">${lowCount} low</span>` : ''}
+  `;
+
+  // Findings list sorted by severity
+  const severityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+  const sorted = [...result.findings].sort((a, b) => (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9));
+
+  const validSeverities = ['low', 'medium', 'high', 'critical'];
+  scanResultsList.innerHTML = sorted.map(f => {
+    const safeSeverity = validSeverities.includes(f.severity) ? f.severity : 'low';
+    return `
+    <div class="scan-finding-row">
+      <div class="scan-finding-header">
+        <span class="scan-finding-file">${escapeHtml(f.file)}${f.line ? `:${f.line}` : ''}</span>
+        <span class="scan-finding-severity ${safeSeverity}">${escapeHtml(f.severity)}</span>
+      </div>
+      <div class="scan-finding-desc">${escapeHtml(f.description)}</div>
+      <div class="scan-finding-category">${escapeHtml(f.category)}</div>
+      ${f.snippet ? `<div class="scan-finding-snippet">${escapeHtml(f.snippet)}</div>` : ''}
+    </div>
+  `;
+  }).join('');
+
+  // Store current workspaceId on the overlay for button handlers
+  scanResultsOverlay.dataset.workspaceId = result.workspaceId;
+
+  scanResultsOverlay.classList.remove('hidden');
+}
+
+function closeScanResultsModal(): void {
+  scanResultsOverlay.classList.add('hidden');
+  const wsId = scanResultsOverlay.dataset.workspaceId;
+  if (wsId) pendingScanSpawns.delete(wsId);
+}
+
+function updateTabScanBadge(workspaceId: string, status: 'scanning' | 'passed' | 'failed' | 'none'): void {
+  const tabEl = tabList.querySelector(`.tab[data-id="${workspaceId}"]`);
+  if (!tabEl) return;
+
+  let badge = tabEl.querySelector('.tab-scan-indicator') as HTMLElement;
+  if (status === 'none') {
+    if (badge) badge.remove();
+    return;
+  }
+
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'tab-scan-indicator';
+    // Insert before close button
+    const closeBtn = tabEl.querySelector('.tab-close');
+    if (closeBtn) {
+      tabEl.insertBefore(badge, closeBtn);
+    } else {
+      tabEl.appendChild(badge);
+    }
+  }
+
+  badge.className = `tab-scan-indicator ${status}`;
+  if (status === 'scanning') {
+    badge.innerHTML = '&#x21BB;'; // ↻
+    badge.title = 'Scanning...';
+  } else if (status === 'passed') {
+    badge.innerHTML = '&#x2713;'; // ✓
+    badge.title = 'Scan passed';
+  } else if (status === 'failed') {
+    badge.innerHTML = '&#x2717;'; // ✗
+    badge.title = 'Scan failed — click for details';
+    badge.style.cursor = 'pointer';
+    badge.onclick = () => {
+      const state = scanStates.get(workspaceId);
+      if (state?.result) showScanResultsModal(state.result);
+    };
+  }
+}
+
+// Scan results modal event handlers
+scanResultsClose.addEventListener('click', closeScanResultsModal);
+scanResultsOverlay.addEventListener('click', (e) => {
+  if (e.target === scanResultsOverlay) closeScanResultsModal();
+});
+scanResultsOverlay.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeScanResultsModal();
+});
+
+scanResultsRescan.addEventListener('click', () => {
+  const wsId = scanResultsOverlay.dataset.workspaceId;
+  if (wsId) {
+    closeScanResultsModal();
+    showScanOverlay(wsId);
+    triggerScan(wsId);
+  }
+});
+
+scanResultsForce.addEventListener('click', async () => {
+  const wsId = scanResultsOverlay.dataset.workspaceId;
+  if (!wsId) return;
+  // Guard: respect allowScanBypass policy
+  const wsTab = tabs.get(wsId);
+  if (wsTab?.workspace.scanConfig?.allowScanBypass === false) return;
+  {
+    closeScanResultsModal();
+    // Force-spawn the terminal bypassing scan gate
+    const tab = tabs.get(wsId);
+    if (tab) {
+      const pane = getActivePane(tab);
+      if (pane) {
+        pane.terminal.writeln('\r\n\x1b[33m[Shield] Force-launching despite scan findings...\x1b[0m\r\n');
+        // Spawn with bypassScanGate flag to skip enforce-before-spawn check
+        pane.status = 'starting';
+        if (pane.dataDisposable) pane.dataDisposable.dispose();
+        pane.dataDisposable = pane.terminal.onData((data) => {
+          api.pty.write(pane.id, data);
+        });
+        const result = await api.pty.spawn({
+          workspaceId: pane.id,
+          cwd: tab.workspace.cwd,
+          shell: tab.workspace.shell,
+          env: tab.workspace.env,
+          cols: pane.terminal.cols,
+          rows: pane.terminal.rows,
+          bypassScanGate: true,
+        });
+        if ('error' in result) {
+          pane.terminal.writeln(`\r\n\x1b[31mFailed to start terminal: ${(result as any).error}\x1b[0m`);
+          pane.status = 'dead';
+        } else {
+          pane.pid = (result as any).pid;
+          pane.status = 'running';
+          if (pane.id.endsWith(':pane-0') && tab.workspace.startupCommand) {
+            const command = getEffectiveStartupCommand(tab.workspace);
+            api.pty.writeCommand(pane.id, command, 600);
+          }
+          if (pane.resizeDisposable) pane.resizeDisposable.dispose();
+          pane.resizeDisposable = pane.terminal.onResize(({ cols, rows }) => {
+            api.pty.resize(pane.id, cols, rows);
+          });
+        }
+      }
+    }
+  }
+});
 
 // ============================================
 // Sidebar
@@ -847,9 +1298,35 @@ function openEditModalForWorkspace(ws: Workspace): void {
   wsMaxRestartsInput.value = String(ws.maxRestarts || 3);
   maxRestartsGroup.style.display = ws.autoRestart ? '' : 'none';
   wsGroupInput.value = ws.group || '';
+  wsResumeModeSelect.value = ws.sessionResumeMode || 'continue';
+  const isClaudeCmdEdit = /^claude(\s|$)/i.test(ws.startupCommand?.trim() || '');
+  resumeModeGroup.style.display = isClaudeCmdEdit ? '' : 'none';
   templateGroup.style.display = 'none';
   selectedColor = ws.color;
   initColorPicker();
+  // Hide scaffold mode toggle in edit mode
+  scaffoldModeToggle.style.display = 'none';
+  scaffoldMode = false;
+  toggleScaffoldMode(false);
+  // Scan config fields
+  if (shieldSupportsScanning) {
+    scanPolicyGroup.style.display = '';
+    scanBackgroundGroup.style.display = '';
+    scanBypassGroup.style.display = '';
+    scanThresholdGroup.style.display = '';
+    scanExcludeGroup.style.display = '';
+    wsScanPolicySelect.value = ws.scanConfig?.enforcementMode || 'off';
+    wsScanBackgroundInput.checked = ws.scanConfig?.backgroundScanEnabled || false;
+    wsScanBypassInput.checked = ws.scanConfig?.allowScanBypass !== false;
+    wsScanThresholdSelect.value = ws.scanConfig?.scanFailThreshold || 'high';
+    wsScanExcludeTextarea.value = ws.scanConfig?.excludePatterns?.join('\n') || '';
+  } else {
+    scanPolicyGroup.style.display = 'none';
+    scanBackgroundGroup.style.display = 'none';
+    scanBypassGroup.style.display = 'none';
+    scanThresholdGroup.style.display = 'none';
+    scanExcludeGroup.style.display = 'none';
+  }
   modalOverlay.classList.remove('hidden');
   wsNameInput.focus();
 }
@@ -992,6 +1469,9 @@ async function addWorkspaceTab(workspace: Workspace, autoSpawn = true, startupDe
     unreadCount: 0,
     restartCount: 0,
     restartStabilityTimer: null,
+    _resumeAttemptTime: null,
+    shieldDetectionCount: 0,
+    shieldHasBlock: false,
   };
 
   tabs.set(workspace.id, tabState);
@@ -1264,6 +1744,25 @@ function updateTabBadge(workspaceId: string): void {
   }
 }
 
+// Shield detection badge on tabs
+function updateTabShieldBadge(workspaceId: string): void {
+  const tab = tabs.get(workspaceId);
+  const tabEl = tabList.querySelector(`.tab[data-id="${workspaceId}"]`);
+  if (!tab || !tabEl) return;
+
+  if (tab.shieldDetectionCount > 0) {
+    if (tab.shieldHasBlock) {
+      tabEl.classList.remove('shield-warn');
+      tabEl.classList.add('shield-block');
+    } else {
+      tabEl.classList.remove('shield-block');
+      tabEl.classList.add('shield-warn');
+    }
+  } else {
+    tabEl.classList.remove('shield-warn', 'shield-block');
+  }
+}
+
 // #3: Render tab bar with groups
 function renderTabBar(): void {
   // Remember which tabs exist
@@ -1341,6 +1840,7 @@ function renderTabBar(): void {
   // Re-add badges
   for (const [id, tab] of tabs) {
     if (tab.hasUnread) updateTabBadge(id);
+    if (tab.shieldDetectionCount > 0) updateTabShieldBadge(id);
   }
 }
 
@@ -1398,6 +1898,10 @@ function showContextMenu(x: number, y: number, workspaceId: string): void {
     // #8: Save as template
     { label: 'Save as Template', action: () => saveAsTemplate(workspaceId) },
     { label: 'Duplicate Tab', action: () => duplicateTab(workspaceId) },
+    ...(shieldSupportsScanning ? [
+      { label: 'Scan Repository', action: () => { showScanOverlay(workspaceId); triggerScan(workspaceId); } },
+      { label: 'Quick Scan (changes only)', action: () => { showScanOverlay(workspaceId, true); triggerScan(workspaceId, { incremental: true }); } },
+    ] : []),
     { separator: true },
     // #2: Split pane options
     { label: 'Split Down', shortcut: 'Ctrl+Shift+D', action: () => splitPane(workspaceId, 'vertical') },
@@ -1464,6 +1968,109 @@ function closeContextMenu(): void {
   }
 }
 
+function showTerminalContextMenu(x: number, y: number, workspaceId: string, paneId: string): void {
+  closeContextMenu();
+
+  const tab = tabs.get(workspaceId);
+  if (!tab) return;
+
+  const pane = findPaneById(tab.paneRoot, paneId);
+  if (!pane) return;
+
+  const hasSelection = pane.terminal.getSelection().length > 0;
+  const hasMultiplePanes = findAllLeaves(tab.paneRoot).length > 1;
+
+  const menu = document.createElement('div');
+  menu.className = 'context-menu';
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+
+  interface TermContextMenuItem {
+    label?: string;
+    shortcut?: string;
+    action?: () => void;
+    disabled?: boolean;
+    separator?: boolean;
+    danger?: boolean;
+    hidden?: boolean;
+  }
+
+  const items: TermContextMenuItem[] = [
+    { label: 'Copy', shortcut: 'Ctrl+Shift+C', disabled: !hasSelection, action: () => {
+      const text = pane.terminal.getSelection();
+      if (text) navigator.clipboard.writeText(text);
+    }},
+    { label: 'Paste', shortcut: 'Ctrl+Shift+V', action: async () => {
+      const text = await navigator.clipboard.readText();
+      if (text && pane.pid) api.pty.write(pane.id, text);
+    }},
+    { label: 'Select All', shortcut: 'Ctrl+Shift+A', action: () => {
+      pane.terminal.selectAll();
+      pane.terminal.focus();
+    }},
+    { separator: true },
+    { label: 'Clear Terminal', action: () => {
+      pane.terminal.clear();
+    }},
+    { separator: true },
+    { label: 'Find', shortcut: 'Ctrl+F', action: () => openSearch() },
+    { separator: true },
+    { label: 'Split Down', shortcut: 'Ctrl+Shift+D', action: () => splitPane(workspaceId, 'vertical') },
+    { label: 'Split Right', shortcut: 'Ctrl+Shift+E', action: () => splitPane(workspaceId, 'horizontal') },
+    { label: 'Close Pane', shortcut: 'Ctrl+Shift+W', danger: true, hidden: !hasMultiplePanes, action: () => closePaneById(workspaceId, paneId) },
+  ];
+
+  for (const item of items) {
+    if (item.hidden) continue;
+    if (item.separator) {
+      const sep = document.createElement('div');
+      sep.className = 'context-menu-separator';
+      menu.appendChild(sep);
+    } else {
+      const el = document.createElement('div');
+      el.className = 'context-menu-item' + (item.danger ? ' danger' : '') + (item.disabled ? ' disabled' : '');
+
+      const label = document.createElement('span');
+      label.textContent = item.label!;
+      el.appendChild(label);
+
+      if (item.shortcut) {
+        const shortcut = document.createElement('span');
+        shortcut.className = 'context-menu-shortcut';
+        shortcut.textContent = item.shortcut;
+        el.appendChild(shortcut);
+      }
+
+      if (!item.disabled) {
+        el.addEventListener('click', () => {
+          closeContextMenu();
+          item.action!();
+        });
+      }
+
+      menu.appendChild(el);
+    }
+  }
+
+  document.body.appendChild(menu);
+  activeContextMenu = menu;
+
+  // Adjust position if menu overflows viewport
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+      menu.style.left = `${window.innerWidth - rect.width - 4}px`;
+    }
+    if (rect.bottom > window.innerHeight) {
+      menu.style.top = `${window.innerHeight - rect.height - 4}px`;
+    }
+  });
+
+  setTimeout(() => {
+    document.addEventListener('click', closeContextMenu, { once: true });
+  }, 0);
+}
+
 // ============================================
 // #8: Workspace Templates
 // ============================================
@@ -1509,6 +2116,159 @@ function saveAsTemplate(workspaceId: string): void {
 }
 
 // ============================================
+// Scaffold Functions
+// ============================================
+
+function toggleScaffoldMode(scaffold: boolean): void {
+  scaffoldMode = scaffold;
+  if (scaffold) {
+    existingModeBtn.classList.remove('active');
+    scaffoldModeBtn.classList.add('active');
+    existingForm.style.display = 'none';
+    scaffoldForm.style.display = '';
+    modalSave.textContent = 'Create Project';
+  } else {
+    scaffoldModeBtn.classList.remove('active');
+    existingModeBtn.classList.add('active');
+    scaffoldForm.style.display = 'none';
+    existingForm.style.display = '';
+    modalSave.textContent = 'Save';
+  }
+}
+
+async function loadScaffoldTemplates(): Promise<void> {
+  try {
+    scaffoldTemplates = await api.scaffold.list();
+  } catch {
+    scaffoldTemplates = [];
+  }
+  renderScaffoldTemplateGrid();
+}
+
+function renderScaffoldTemplateGrid(): void {
+  scaffoldTemplateGrid.innerHTML = '';
+  for (const info of scaffoldTemplates) {
+    const card = document.createElement('div');
+    card.className = 'scaffold-template-card';
+    if (selectedScaffold && selectedScaffold.path === info.path) {
+      card.classList.add('selected');
+    }
+
+    const icon = document.createElement('div');
+    icon.className = 'scaffold-template-icon';
+    icon.textContent = info.manifest.icon || '📄';
+
+    const name = document.createElement('div');
+    name.className = 'scaffold-template-name';
+    name.textContent = info.manifest.name;
+
+    const desc = document.createElement('div');
+    desc.className = 'scaffold-template-desc';
+    desc.textContent = info.manifest.description;
+
+    card.appendChild(icon);
+    card.appendChild(name);
+    card.appendChild(desc);
+
+    if (info.source === 'local') {
+      const badge = document.createElement('div');
+      badge.className = 'scaffold-template-source';
+      badge.textContent = 'local';
+      card.appendChild(badge);
+    }
+
+    card.addEventListener('click', () => {
+      selectedScaffold = info;
+      scaffoldTemplateGrid.querySelectorAll('.scaffold-template-card').forEach(c => c.classList.remove('selected'));
+      card.classList.add('selected');
+      renderScaffoldVariables(info);
+      updateScaffoldAutoCommands(info);
+    });
+
+    scaffoldTemplateGrid.appendChild(card);
+  }
+}
+
+function renderScaffoldVariables(info: ScaffoldTemplateInfo): void {
+  scaffoldVariablesDiv.innerHTML = '';
+  const vars = info.manifest.variables;
+  if (!vars || vars.length === 0) return;
+
+  for (const v of vars) {
+    // Skip PROJECT_NAME variable — it's handled by the project name field
+    if (v.key === 'PROJECT_NAME') continue;
+
+    const group = document.createElement('div');
+    group.className = 'form-group';
+
+    const label = document.createElement('label');
+    label.setAttribute('for', `scaffold-var-${v.key}`);
+    label.textContent = v.prompt;
+
+    group.appendChild(label);
+
+    if (v.options && v.options.length > 0) {
+      const select = document.createElement('select');
+      select.id = `scaffold-var-${v.key}`;
+      select.dataset.varKey = v.key;
+      for (const opt of v.options) {
+        const option = document.createElement('option');
+        option.value = opt;
+        option.textContent = opt;
+        if (opt === v.default) option.selected = true;
+        select.appendChild(option);
+      }
+      group.appendChild(select);
+    } else {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.id = `scaffold-var-${v.key}`;
+      input.dataset.varKey = v.key;
+      input.placeholder = v.default || '';
+      input.value = v.default || '';
+      input.autocomplete = 'off';
+      group.appendChild(input);
+    }
+
+    scaffoldVariablesDiv.appendChild(group);
+  }
+}
+
+function updateScaffoldAutoCommands(info: ScaffoldTemplateInfo): void {
+  const cmds = info.manifest.auto_commands || [];
+  scaffoldGitInitInput.checked = cmds.includes('git init');
+  scaffoldRunClaudeInput.checked = cmds.includes('claude');
+}
+
+function gatherScaffoldVariables(): Record<string, string> {
+  const vars: Record<string, string> = {};
+  const inputs = scaffoldVariablesDiv.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-var-key]');
+  inputs.forEach(el => {
+    vars[el.dataset.varKey!] = el.value;
+  });
+  return vars;
+}
+
+function initScaffoldColorPicker(): void {
+  scaffoldColorsDiv.innerHTML = '';
+  for (const color of WORKSPACE_COLORS) {
+    const swatch = document.createElement('div');
+    swatch.className = 'color-swatch';
+    swatch.style.background = color;
+    swatch.dataset.color = color;
+    if (color === scaffoldSelectedColor) swatch.classList.add('selected');
+
+    swatch.addEventListener('click', () => {
+      scaffoldColorsDiv.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
+      swatch.classList.add('selected');
+      scaffoldSelectedColor = color;
+    });
+
+    scaffoldColorsDiv.appendChild(swatch);
+  }
+}
+
+// ============================================
 // Workspace Modal
 // ============================================
 
@@ -1542,11 +2302,49 @@ function openNewModal(): void {
   wsMaxRestartsInput.value = '3';
   maxRestartsGroup.style.display = 'none';
   wsGroupInput.value = '';
+  wsResumeModeSelect.value = 'continue';
+  resumeModeGroup.style.display = ''; // Visible since default command is 'claude'
   wsTemplateSelect.value = '';
   templateGroup.style.display = '';
   selectedColor = WORKSPACE_COLORS[Math.floor(Math.random() * WORKSPACE_COLORS.length)];
   initColorPicker();
   loadTemplates();
+
+  // Scan config fields
+  if (shieldSupportsScanning) {
+    scanPolicyGroup.style.display = '';
+    scanBackgroundGroup.style.display = '';
+    scanBypassGroup.style.display = '';
+    scanThresholdGroup.style.display = '';
+    scanExcludeGroup.style.display = '';
+    wsScanPolicySelect.value = 'off';
+    wsScanBackgroundInput.checked = false;
+    wsScanBypassInput.checked = true;
+    wsScanThresholdSelect.value = 'high';
+    wsScanExcludeTextarea.value = '';
+  } else {
+    scanPolicyGroup.style.display = 'none';
+    scanBackgroundGroup.style.display = 'none';
+    scanBypassGroup.style.display = 'none';
+    scanThresholdGroup.style.display = 'none';
+    scanExcludeGroup.style.display = 'none';
+  }
+
+  // Reset scaffold state
+  scaffoldMode = false;
+  selectedScaffold = null;
+  scaffoldProjectNameInput.value = '';
+  scaffoldParentDirInput.value = '';
+  scaffoldVariablesDiv.innerHTML = '';
+  scaffoldGitInitInput.checked = true;
+  scaffoldRunClaudeInput.checked = true;
+  scaffoldGroupInput.value = '';
+  scaffoldSelectedColor = WORKSPACE_COLORS[Math.floor(Math.random() * WORKSPACE_COLORS.length)];
+  initScaffoldColorPicker();
+  toggleScaffoldMode(false);
+  scaffoldModeToggle.style.display = '';
+  loadScaffoldTemplates();
+
   modalOverlay.classList.remove('hidden');
   wsNameInput.focus();
 }
@@ -1564,6 +2362,12 @@ function closeModal(): void {
 }
 
 async function saveModal(): Promise<void> {
+  // Scaffold mode: create new project flow
+  if (scaffoldMode && !editingWorkspaceId) {
+    await saveScaffoldModal();
+    return;
+  }
+
   const name = wsNameInput.value.trim();
   const cwd = wsCwdInput.value.trim();
   const startupCommand = wsCommandInput.value.trim();
@@ -1571,12 +2375,25 @@ async function saveModal(): Promise<void> {
   const autoRestart = wsAutorestartInput.checked;
   const maxRestarts = parseInt(wsMaxRestartsInput.value) || 3;
   const group = wsGroupInput.value.trim();
+  const sessionResumeMode = wsResumeModeSelect.value as 'off' | 'resume' | 'continue';
 
   if (!name || !cwd) {
     if (!name) wsNameInput.style.borderColor = '#F85149';
     if (!cwd) wsCwdInput.style.borderColor = '#F85149';
     return;
   }
+
+  // Build scan config if Shield scanning is supported, preserving existing interval
+  const existingWs = editingWorkspaceId ? allWorkspaces.find(w => w.id === editingWorkspaceId) : null;
+  const excludeLines = wsScanExcludeTextarea.value.split('\n').map(l => l.trim()).filter(Boolean);
+  const scanConfig = shieldSupportsScanning ? {
+    ...existingWs?.scanConfig,
+    enforcementMode: wsScanPolicySelect.value as 'off' | 'manual' | 'enforce-before-spawn',
+    backgroundScanEnabled: wsScanBackgroundInput.checked,
+    allowScanBypass: wsScanBypassInput.checked,
+    scanFailThreshold: wsScanThresholdSelect.value as 'critical' | 'high' | 'medium' | 'low',
+    excludePatterns: excludeLines.length > 0 ? excludeLines : undefined,
+  } : undefined;
 
   if (editingWorkspaceId) {
     const updated = await api.workspace.update(editingWorkspaceId, {
@@ -1588,6 +2405,8 @@ async function saveModal(): Promise<void> {
       autoRestart,
       maxRestarts,
       group: group || undefined,
+      sessionResumeMode,
+      scanConfig,
     });
 
     if (updated) {
@@ -1615,12 +2434,79 @@ async function saveModal(): Promise<void> {
       autoRestart,
       maxRestarts,
       group: group || undefined,
+      sessionResumeMode,
+      scanConfig,
     });
 
     allWorkspaces.push(workspace);
     await addWorkspaceTab(workspace);
     activateTab(workspace.id);
   }
+
+  closeModal();
+  renderTabBar();
+  renderSidebar();
+}
+
+async function saveScaffoldModal(): Promise<void> {
+  const projectName = scaffoldProjectNameInput.value.trim();
+  const parentDir = scaffoldParentDirInput.value.trim();
+
+  if (!projectName) {
+    scaffoldProjectNameInput.style.borderColor = '#F85149';
+    return;
+  }
+  if (!parentDir) {
+    scaffoldParentDirInput.style.borderColor = '#F85149';
+    return;
+  }
+  if (!selectedScaffold) {
+    return;
+  }
+
+  const variables = gatherScaffoldVariables();
+
+  // Build auto-commands from checkboxes
+  const autoCommands: string[] = [];
+  if (scaffoldGitInitInput.checked) autoCommands.push('git init');
+  // Gather any extra auto_commands from template (excluding git init and claude)
+  const templateCmds = selectedScaffold.manifest.auto_commands || [];
+  for (const cmd of templateCmds) {
+    if (cmd === 'git init' || cmd === 'claude') continue;
+    autoCommands.push(cmd);
+  }
+  if (scaffoldRunClaudeInput.checked) autoCommands.push('claude');
+
+  // Scaffold the project
+  const result = await api.scaffold.create({
+    templatePath: selectedScaffold.path,
+    projectName,
+    parentDir,
+    variables,
+    autoCommands,
+    workspaceColor: scaffoldSelectedColor,
+    workspaceGroup: scaffoldGroupInput.value.trim() || undefined,
+  });
+
+  if (!result.success) {
+    alert(`Scaffold failed: ${result.error}`);
+    return;
+  }
+
+  // Create workspace pointing to the new project
+  const startupCommand = autoCommands.length > 0 ? autoCommands.join(' && ') : undefined;
+  const workspace = await api.workspace.create({
+    name: projectName,
+    cwd: result.projectDir,
+    startupCommand,
+    autoStart: true,
+    color: scaffoldSelectedColor,
+    group: scaffoldGroupInput.value.trim() || undefined,
+  });
+
+  allWorkspaces.push(workspace);
+  await addWorkspaceTab(workspace);
+  activateTab(workspace.id);
 
   closeModal();
   renderTabBar();
@@ -1636,6 +2522,7 @@ async function restartTerminal(workspaceId: string): Promise<void> {
 
   // #9: Reset restart count on manual restart
   tab.restartCount = 0;
+  tab._resumeAttemptTime = null;
   if (tab.restartStabilityTimer) {
     clearTimeout(tab.restartStabilityTimer);
     tab.restartStabilityTimer = null;
@@ -1912,6 +2799,137 @@ function updateClaudeMetricsDisplay(entry: ClaudeMetricsEntry | null): void {
 }
 
 // ============================================
+// Shield Status & Toasts
+// ============================================
+
+function updateShieldStatus(status: { enabled: boolean; detectionCount: number; licenseValid: boolean }): void {
+  shieldActive = status.enabled;
+  shieldDetectionCount = status.detectionCount;
+
+  if (status.enabled) {
+    statusShield.classList.remove('hidden');
+    statusShield.classList.toggle('active', status.detectionCount === 0);
+    statusShield.classList.toggle('warn', status.detectionCount > 0);
+    shieldCountEl.textContent = String(status.detectionCount);
+
+    // Check if Shield supports repo scanning (only enabled when provider is configured)
+    api.shield.getScanProviderStatus().then((providerStatus) => {
+      shieldSupportsScanning = providerStatus.configured;
+    }).catch(() => {
+      shieldSupportsScanning = false;
+    });
+  } else {
+    statusShield.classList.add('hidden');
+    shieldSupportsScanning = false;
+  }
+
+  updateSettingsShieldNav();
+}
+
+function showToast(header: string, body: string, color: string = 'var(--blue)', duration: number = 4000): void {
+  const toast = document.createElement('div');
+  toast.className = 'shield-toast';
+  toast.style.borderColor = color;
+  toast.innerHTML = `
+    <div class="shield-toast-header" style="color: ${color}">${header}</div>
+    <div class="shield-toast-body">${escapeHtml(body)}</div>
+  `;
+  shieldToastContainer.appendChild(toast);
+  setTimeout(() => {
+    toast.style.animation = 'toast-out 0.25s ease-in forwards';
+    setTimeout(() => toast.remove(), 250);
+  }, duration);
+}
+
+function showShieldToast(detection: { category: string; pattern: string; action: string; context: string }): void {
+  const toast = document.createElement('div');
+  const actionClass = detection.action === 'block' ? ' block' : detection.action === 'monitor' ? ' monitor' : '';
+  toast.className = 'shield-toast' + actionClass;
+
+  const actionLabel = detection.action === 'block' ? 'BLOCKED' : detection.action === 'warn' ? 'WARNING' : detection.action === 'monitor' ? 'MONITORED' : 'DETECTED';
+  const icon = detection.action === 'block' ? '&#x1F6D1;' : detection.action === 'monitor' ? '&#x1F50D;' : '&#x1F6E1;';
+
+  toast.innerHTML = `
+    <div class="shield-toast-header">${icon} Shield: ${actionLabel}</div>
+    <div class="shield-toast-body">${escapeHtml(detection.context)}</div>
+    <span class="shield-toast-category">${escapeHtml(detection.category)} / ${escapeHtml(detection.pattern)}</span>
+  `;
+
+  shieldToastContainer.appendChild(toast);
+
+  // Auto-dismiss: 8s for block, 3s for monitor, 5s default
+  const duration = detection.action === 'block' ? 8000 : detection.action === 'monitor' ? 3000 : 5000;
+  setTimeout(() => {
+    toast.style.animation = 'toast-out 0.25s ease-in forwards';
+    setTimeout(() => toast.remove(), 250);
+  }, duration);
+}
+
+// ============================================
+// Shield Warn Prompt Modal
+// ============================================
+
+const shieldWarnOverlay = document.getElementById('shield-warn-overlay')!;
+const shieldWarnTitle = document.getElementById('shield-warn-title')!;
+const shieldWarnMessage = document.getElementById('shield-warn-message')!;
+const shieldWarnDetails = document.getElementById('shield-warn-details')!;
+const shieldWarnCancel = document.getElementById('shield-warn-cancel')!;
+const shieldWarnContinue = document.getElementById('shield-warn-continue')!;
+
+// Queue of pending warn prompts (handles concurrent warns for different workspaces)
+interface WarnQueueEntry {
+  workspaceId: string;
+  detection: { category: string; pattern: string; action: string; context: string; userPrompt?: string };
+}
+const warnQueue: WarnQueueEntry[] = [];
+let pendingWarnWorkspaceId: string | null = null;
+
+function showWarnPrompt(workspaceId: string, detection: { category: string; pattern: string; action: string; context: string; userPrompt?: string }): void {
+  // If a warn modal is already showing, queue this one
+  if (pendingWarnWorkspaceId !== null) {
+    warnQueue.push({ workspaceId, detection });
+    return;
+  }
+
+  pendingWarnWorkspaceId = workspaceId;
+
+  shieldWarnTitle.textContent = 'Shield Warning';
+  shieldWarnMessage.textContent = detection.userPrompt || `Shield detected sensitive data (${detection.category}) in your input.`;
+  shieldWarnDetails.innerHTML = `
+    <div><strong>Category:</strong> ${escapeHtml(detection.category)}</div>
+    <div><strong>Pattern:</strong> ${escapeHtml(detection.pattern)}</div>
+    <div><strong>Details:</strong> ${escapeHtml(detection.context)}</div>
+  `;
+
+  shieldWarnOverlay.classList.remove('hidden');
+  shieldWarnCancel.focus();
+}
+
+function respondToWarn(allow: boolean): void {
+  if (pendingWarnWorkspaceId) {
+    api.shield.respondToWarn(pendingWarnWorkspaceId, allow);
+    pendingWarnWorkspaceId = null;
+  }
+  shieldWarnOverlay.classList.add('hidden');
+
+  // Show next queued warn prompt if any
+  if (warnQueue.length > 0) {
+    const next = warnQueue.shift()!;
+    showWarnPrompt(next.workspaceId, next.detection);
+  }
+}
+
+shieldWarnCancel.addEventListener('click', () => respondToWarn(false));
+shieldWarnContinue.addEventListener('click', () => respondToWarn(true));
+
+// Close on Escape key
+shieldWarnOverlay.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    respondToWarn(false);
+  }
+});
+
+// ============================================
 // Analytics Dashboard
 // ============================================
 
@@ -1970,11 +2988,137 @@ async function openDashboard(): Promise<void> {
   } catch {
     dashOrgSection.style.display = 'none';
   }
+
+  // Shield audit tab
+  loadShieldAuditDashboard();
 }
 
 function closeDashboard(): void {
   dashboardOverlay.classList.add('hidden');
 }
+
+// ============================================
+// Shield Audit Dashboard Tab
+// ============================================
+
+const dashShieldSection = document.getElementById('dash-shield-section')!;
+const dashShieldTotal = document.getElementById('dash-shield-total')!;
+const dashShieldBlocked = document.getElementById('dash-shield-blocked')!;
+const dashShieldWarned = document.getElementById('dash-shield-warned')!;
+const dashShieldIntegrity = document.getElementById('dash-shield-integrity')!;
+const dashShieldTimeline = document.getElementById('dash-shield-timeline')!;
+const dashShieldExportBtn = document.getElementById('dash-shield-export')!;
+const dashShieldVerifyBtn = document.getElementById('dash-shield-verify')!;
+
+// Shield filter controls
+const dashShieldFilterAction = document.getElementById('dash-shield-filter-action') as HTMLSelectElement;
+const dashShieldFilterCategory = document.getElementById('dash-shield-filter-category') as HTMLSelectElement;
+const dashShieldFilterSearch = document.getElementById('dash-shield-filter-search') as HTMLInputElement;
+
+// Cached detections for filtering
+let cachedShieldDetections: any[] = [];
+
+function renderShieldTimeline(detections: any[]): void {
+  // Update summary cards with filtered counts
+  const blocked = detections.filter((e: any) => e.action === 'blocked').length;
+  const warned = detections.filter((e: any) => e.action === 'warned').length;
+  dashShieldTotal.textContent = String(detections.length);
+  dashShieldBlocked.textContent = String(blocked);
+  dashShieldWarned.textContent = String(warned);
+
+  if (detections.length === 0) {
+    dashShieldTimeline.innerHTML = '<div style="color: var(--text-muted); padding: 12px; text-align: center;">No detections found</div>';
+  } else {
+    const recent = detections.slice().reverse();
+    dashShieldTimeline.innerHTML = recent.map((e: any) => {
+      const time = new Date(e.timestamp).toLocaleTimeString();
+      const actionClass = e.action === 'blocked' ? 'blocked' : e.action === 'warned' ? 'warned' : 'monitored';
+      return `<div class="shield-audit-entry">
+        <span class="audit-time">${time}</span>
+        <span class="audit-action ${actionClass}">${e.action || 'detected'}</span>
+        <span>${escapeHtml(e.category || '')} / ${escapeHtml(e.pattern || '')}</span>
+        ${e.workspace ? `<span style="color: var(--text-muted);"> in ${escapeHtml(e.workspace)}</span>` : ''}
+        ${e.userResponse ? `<span style="color: var(--accent);"> [${e.userResponse}]</span>` : ''}
+      </div>`;
+    }).join('');
+  }
+}
+
+function filterShieldDetections(): void {
+  const actionFilter = dashShieldFilterAction.value;
+  const categoryFilter = dashShieldFilterCategory.value.toLowerCase();
+  const searchText = dashShieldFilterSearch.value.toLowerCase().trim();
+
+  let filtered = cachedShieldDetections;
+
+  if (actionFilter) {
+    filtered = filtered.filter((e: any) => e.action === actionFilter);
+  }
+
+  if (categoryFilter) {
+    filtered = filtered.filter((e: any) => {
+      const cat = (e.category || '').toLowerCase().replace(/\s+/g, '_');
+      return cat === categoryFilter || (e.category || '').toLowerCase() === categoryFilter;
+    });
+  }
+
+  if (searchText) {
+    filtered = filtered.filter((e: any) => {
+      const haystack = [e.context || '', e.pattern || '', e.workspace || '', e.category || ''].join(' ').toLowerCase();
+      return haystack.includes(searchText);
+    });
+  }
+
+  renderShieldTimeline(filtered);
+}
+
+// Attach filter listeners
+dashShieldFilterAction.addEventListener('change', filterShieldDetections);
+dashShieldFilterCategory.addEventListener('change', filterShieldDetections);
+dashShieldFilterSearch.addEventListener('input', filterShieldDetections);
+
+async function loadShieldAuditDashboard(): Promise<void> {
+  if (!shieldActive) {
+    dashShieldSection.style.display = 'none';
+    return;
+  }
+  dashShieldSection.style.display = '';
+
+  // Reset filters on load
+  dashShieldFilterAction.value = '';
+  dashShieldFilterCategory.value = '';
+  dashShieldFilterSearch.value = '';
+
+  try {
+    const result = await api.shield.queryAuditLogs();
+    const entries = result.entries || [];
+
+    // Cache all detections (no 50-item limit)
+    cachedShieldDetections = entries.filter((e: any) => e.event === 'dlp_detection');
+    renderShieldTimeline(cachedShieldDetections);
+  } catch {
+    cachedShieldDetections = [];
+    dashShieldTimeline.innerHTML = '<div style="color: var(--text-muted); padding: 12px;">Failed to load audit logs</div>';
+  }
+}
+
+dashShieldExportBtn.addEventListener('click', async () => {
+  const result = await api.shield.exportAuditLogs();
+  if (result?.error) {
+    showToast('Export Failed', result.error, 'var(--red)', 5000);
+  } else if (result?.success) {
+    showToast('Exported', `${result.count} entries exported`, 'var(--green)', 3000);
+  }
+});
+
+dashShieldVerifyBtn.addEventListener('click', async () => {
+  const result = await api.shield.verifyAuditIntegrity();
+  if (result.valid) {
+    dashShieldIntegrity.innerHTML = `<span class="shield-integrity-badge valid">&#x2714; Valid (${result.entries} entries)</span>`;
+  } else {
+    dashShieldIntegrity.innerHTML = `<span class="shield-integrity-badge invalid">&#x2718; Broken at entry ${result.brokenAt ?? '?'}</span>`;
+  }
+});
 
 function populateDashboard(analytics: ClaudeAnalytics): void {
   const { totals, perWorkspace, history } = analytics;
@@ -2080,7 +3224,43 @@ const setApiStatus = document.getElementById('set-api-status')!;
 const setApiOrgInput = document.getElementById('set-api-org') as HTMLInputElement;
 const setApiEnabledInput = document.getElementById('set-api-enabled') as HTMLInputElement;
 
+// Settings nav elements
+const settingsNavItems = document.querySelectorAll<HTMLButtonElement>('.settings-nav-item');
+const settingsSections = document.querySelectorAll<HTMLElement>('.settings-section');
+const settingsNavShieldItems = document.querySelectorAll<HTMLButtonElement>('.settings-nav-shield');
+let activeSettingsSection = 'general';
+
+function switchSettingsSection(key: string): void {
+  activeSettingsSection = key;
+  settingsNavItems.forEach(item => {
+    item.classList.toggle('active', item.dataset.settingsSection === key);
+  });
+  settingsSections.forEach(section => {
+    const sectionKey = section.id.replace('settings-section-', '');
+    section.classList.toggle('hidden', sectionKey !== key);
+  });
+}
+
+settingsNavItems.forEach(item => {
+  item.addEventListener('click', () => {
+    const key = item.dataset.settingsSection;
+    if (key) switchSettingsSection(key);
+  });
+});
+
+function updateSettingsShieldNav(): void {
+  settingsNavShieldItems.forEach(item => {
+    item.classList.toggle('nav-hidden', !shieldActive);
+  });
+  // If viewing the hidden shield section, switch to general
+  if (!shieldActive && activeSettingsSection === 'shield') {
+    switchSettingsSection('general');
+  }
+}
+
 async function openSettings(): Promise<void> {
+  switchSettingsSection('general');
+  updateSettingsShieldNav();
   setFontSizeInput.value = String(currentSettings.fontSize);
   setFontFamilyInput.value = currentSettings.fontFamily;
   setDefaultShellInput.value = currentSettings.defaultShell;
@@ -2098,6 +3278,13 @@ async function openSettings(): Promise<void> {
     setApiStatus.textContent = '';
     setApiStatus.className = 'settings-api-status';
   } catch {}
+
+  // Load Shield policy and custom patterns
+  loadShieldPolicy();
+  loadShieldPatterns();
+
+  // Load scan provider settings
+  loadScanProviderSettings();
 
   settingsOverlay.classList.remove('hidden');
   setFontSizeInput.focus();
@@ -2188,7 +3375,7 @@ setApiTestBtn.addEventListener('click', async () => {
 window.addEventListener('focus', () => { windowIsFocused = true; });
 window.addEventListener('blur', () => { windowIsFocused = false; });
 
-function trackPaneActivity(paneId: string, workspaceName: string): void {
+function trackPaneActivity(paneId: string, workspaceName: string, tabId: string): void {
   // Clear existing timer for this pane
   const existing = paneIdleTimers.get(paneId);
   if (existing) clearTimeout(existing);
@@ -2199,17 +3386,26 @@ function trackPaneActivity(paneId: string, workspaceName: string): void {
   // Set a new idle timer
   const timer = setTimeout(() => {
     paneIdleTimers.delete(paneId);
-    showIdleNotification(workspaceName);
+    showIdleNotification(workspaceName, tabId);
   }, currentSettings.notifyDelaySeconds * 1000);
   paneIdleTimers.set(paneId, timer);
 }
 
-function showIdleNotification(workspaceName: string): void {
+function showIdleNotification(workspaceName: string, workspaceId: string): void {
   if (windowIsFocused) return;
+  const snippet = lastOutputSnippet.get(workspaceId) || '';
+  const lines = snippet.split(/[\r\n]+/).filter(l => l.trim());
+  const preview = lines.length > 0 ? lines[lines.length - 1].slice(0, 80) : '';
   try {
-    new Notification('KiteTerm', {
-      body: `Command completed in "${workspaceName}"`,
+    const n = new Notification('Tarca Terminal', {
+      body: preview
+        ? `${workspaceName}: ${preview}`
+        : `Command completed in "${workspaceName}"`,
     });
+    n.onclick = () => {
+      window.focus();
+      if (tabs.has(workspaceId)) activateTab(workspaceId);
+    };
   } catch {}
 }
 
@@ -2252,6 +3448,10 @@ function setupIpcListeners(): void {
       if (pane && pane.type === 'leaf') {
         pane.terminal.write(data);
 
+        // Track last output snippet for notification preview
+        const cleaned = data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').trim();
+        if (cleaned) lastOutputSnippet.set(tabId, cleaned.slice(-200));
+
         // #4: Unread badge — if this tab is not active
         if (tabId !== activeTabId) {
           tab.hasUnread = true;
@@ -2260,7 +3460,7 @@ function setupIpcListeners(): void {
         }
 
         // Notification on command completion: track activity
-        trackPaneActivity(workspaceId, tab.workspace.name);
+        trackPaneActivity(workspaceId, tab.workspace.name, tabId);
         return;
       }
     }
@@ -2273,6 +3473,21 @@ function setupIpcListeners(): void {
       if (pane && pane.type === 'leaf') {
         pane.status = 'dead';
         updateTabStatus(tabId);
+
+        // Session resume failure detection: if pane-0 exits within 10s of a resume attempt,
+        // clear the stale session ID and auto-restart with a fresh session
+        if (pane.id.endsWith(':pane-0') && tab._resumeAttemptTime && (Date.now() - tab._resumeAttemptTime) < 10000) {
+          tab._resumeAttemptTime = null;
+          tab.workspace.lastClaudeSessionId = undefined;
+          api.workspace.update(tabId, { lastClaudeSessionId: undefined });
+          showToast('\u26A0 Resume Failed', `${tab.workspace.name}: starting fresh session`, 'var(--orange, #D29922)', 5000);
+          setTimeout(async () => {
+            if (!tabs.has(tabId)) return;
+            await spawnPaneTerminal(tabId, pane);
+            updateTabStatus(tabId);
+          }, 1000);
+          return;
+        }
 
         // #9: Auto-restart logic
         if (tab.workspace.autoRestart && tab.restartCount < (tab.workspace.maxRestarts || 3)) {
@@ -2396,6 +3611,64 @@ function setupIpcListeners(): void {
     }
   });
 
+  // Claude Code session ID updates (for resume-on-reboot)
+  api.claude.onSessionUpdate(({ workspaceId, sessionId }) => {
+    const tab = tabs.get(workspaceId);
+    if (tab) tab.workspace.lastClaudeSessionId = sessionId;
+    const idx = allWorkspaces.findIndex(w => w.id === workspaceId);
+    if (idx !== -1) allWorkspaces[idx].lastClaudeSessionId = sessionId;
+  });
+
+  // Shield status + detection events
+  api.shield.onStatus((status) => {
+    updateShieldStatus(status);
+  });
+
+  api.shield.onDetection(({ workspaceId, detection }) => {
+    // Update count
+    shieldDetectionCount++;
+    shieldCountEl.textContent = String(shieldDetectionCount);
+    statusShield.classList.remove('active');
+    statusShield.classList.add('warn');
+
+    // Show toast for block and monitor actions (warn is handled by the warn prompt modal)
+    if (detection.action === 'block' || detection.action === 'monitor') {
+      showShieldToast(detection);
+    }
+
+    // Update tab shield badge
+    if (workspaceId) {
+      const baseTabId = workspaceId.split(':')[0];
+      const tab = tabs.get(baseTabId);
+      if (tab) {
+        tab.shieldDetectionCount++;
+        if (detection.action === 'block') tab.shieldHasBlock = true;
+        updateTabShieldBadge(baseTabId);
+      }
+    }
+  });
+
+  // Shield warn prompt flow
+  api.shield.onWarnPrompt(({ workspaceId, detection }) => {
+    showWarnPrompt(workspaceId, detection);
+  });
+
+  // Shield scan progress/result listeners
+  api.shield.onScanProgress((progress) => {
+    handleScanProgress(progress);
+  });
+
+  api.shield.onScanResult((result) => {
+    handleScanResult(result);
+  });
+
+  // Shield scan invalidation (branch switch)
+  api.shield.onScanInvalidate((workspaceId) => {
+    scanStates.delete(workspaceId);
+    updateTabScanBadge(workspaceId, 'none');
+    showToast('Scan Invalidated', 'Branch changed — scan results invalidated', 'var(--orange)', 3000);
+  });
+
   // Analytics dashboard shortcut
   api.claude.onAnalyticsDashboard(() => {
     if (dashboardOverlay.classList.contains('hidden')) {
@@ -2457,6 +3730,504 @@ setInterval(() => {
 }, 30000);
 
 // ============================================
+// Shield Policy Management
+// ============================================
+
+const shieldPolicySection = document.getElementById('shield-policy-section')!;
+const shieldDefaultActionSelect = document.getElementById('shield-default-action') as HTMLSelectElement;
+const shieldRulesTbody = document.getElementById('shield-rules-tbody')!;
+const shieldRulesSaveBtn = document.getElementById('shield-rules-save')!;
+const shieldWsOverridesDiv = document.getElementById('shield-ws-overrides')!;
+const shieldWsOverrideSelect = document.getElementById('shield-ws-override-select') as HTMLSelectElement;
+const shieldWsOverrideAddBtn = document.getElementById('shield-ws-override-add')!;
+const shieldLicenseInfo = document.getElementById('shield-license-info')!;
+const shieldLicenseToken = document.getElementById('shield-license-token') as HTMLInputElement;
+const shieldLicenseInstallBtn = document.getElementById('shield-license-install-btn')!;
+
+const DETECTION_CATEGORIES = ['pii', 'credential', 'classification', 'code_secret', 'data_pattern', 'custom'];
+
+async function loadShieldPolicy(): Promise<void> {
+  if (!shieldActive) {
+    return;
+  }
+
+  try {
+    const policy = await api.shield.getPolicy();
+    if (policy && !policy.error) {
+      renderPolicyUI(policy);
+    }
+  } catch {
+    shieldPolicySection.style.display = 'none';
+  }
+
+  // Load license status
+  try {
+    const license = await api.shield.getLicenseStatus();
+    renderLicenseStatus(license);
+  } catch {}
+}
+
+function renderPolicyUI(policy: any): void {
+  // Default action
+  shieldDefaultActionSelect.value = policy.defaultAction || 'monitor';
+
+  // Global rules table
+  shieldRulesTbody.innerHTML = DETECTION_CATEGORIES.map(cat => {
+    const rule = (policy.globalRules || []).find((r: any) => r.category === cat);
+    const action = rule?.action || policy.defaultAction || 'monitor';
+    return `<tr data-category="${cat}">
+      <td>${cat.replace('_', ' ')}</td>
+      <td>
+        <select class="shield-rule-action" data-category="${cat}">
+          <option value="monitor"${action === 'monitor' ? ' selected' : ''}>Monitor</option>
+          <option value="warn"${action === 'warn' ? ' selected' : ''}>Warn</option>
+          <option value="block"${action === 'block' ? ' selected' : ''}>Block</option>
+        </select>
+      </td>
+    </tr>`;
+  }).join('');
+
+  // Workspace overrides
+  renderWorkspaceOverrides(policy);
+
+  // Populate workspace override selector
+  shieldWsOverrideSelect.innerHTML = '<option value="">Select workspace...</option>';
+  for (const ws of allWorkspaces) {
+    if (!policy.workspaceOverrides || !policy.workspaceOverrides[ws.id]) {
+      shieldWsOverrideSelect.innerHTML += `<option value="${ws.id}">${escapeHtml(ws.name)}</option>`;
+    }
+  }
+}
+
+function renderWorkspaceOverrides(policy: any): void {
+  const overrides = policy.workspaceOverrides || {};
+  const entries = Object.entries(overrides);
+
+  if (entries.length === 0) {
+    shieldWsOverridesDiv.innerHTML = '<div style="color: var(--text-muted); font-size: 12px;">No workspace overrides</div>';
+    return;
+  }
+
+  shieldWsOverridesDiv.innerHTML = entries.map(([wsId, override]: [string, any]) => {
+    const wsName = override.name || allWorkspaces.find(w => w.id === wsId)?.name || wsId;
+    const rulesHtml = (override.rules || []).map((r: any) => `
+      <span style="font-size: 11px; padding: 1px 6px; background: var(--bg-hover); border-radius: 3px;">
+        ${r.category}: <strong>${r.action}</strong>
+      </span>
+    `).join(' ');
+
+    return `<div class="shield-ws-override" data-ws-id="${wsId}" style="padding: 8px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <strong style="font-size: 13px;">${escapeHtml(wsName)}</strong>
+        <button class="shield-ws-remove-btn btn-secondary" data-ws-id="${wsId}" style="font-size: 11px; padding: 2px 8px;">Remove</button>
+      </div>
+      <div style="margin-top: 4px;">${rulesHtml || '<span style="color: var(--text-muted); font-size: 11px;">No rules</span>'}</div>
+    </div>`;
+  }).join('');
+
+  // Bind remove buttons
+  shieldWsOverridesDiv.querySelectorAll('.shield-ws-remove-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const wsId = (btn as HTMLElement).dataset.wsId!;
+      await api.shield.deleteWorkspaceOverride(wsId);
+      await loadShieldPolicy();
+    });
+  });
+}
+
+function renderLicenseStatus(license: any): void {
+  if (license.valid) {
+    shieldLicenseInfo.innerHTML = `
+      <div class="license-valid">&#x2714; License Valid</div>
+      ${license.org ? `<div>Organization: ${escapeHtml(license.org)}</div>` : ''}
+      ${license.seats ? `<div>Seats: ${license.seats}</div>` : ''}
+      ${license.expiresAt ? `<div>Expires: ${new Date(license.expiresAt).toLocaleDateString()}</div>` : ''}
+      ${license.error ? `<div style="color: var(--orange);">${escapeHtml(license.error)}</div>` : ''}
+    `;
+  } else {
+    shieldLicenseInfo.innerHTML = `
+      <div class="license-invalid">&#x2718; ${escapeHtml(license.error || 'No valid license')}</div>
+      <div style="margin-top: 4px; color: var(--text-muted);">Shield runs in monitor-only mode without a valid license.</div>
+    `;
+  }
+}
+
+// Save global rules
+shieldRulesSaveBtn.addEventListener('click', async () => {
+  const rules = Array.from(shieldRulesTbody.querySelectorAll('.shield-rule-action')).map(select => ({
+    category: (select as HTMLSelectElement).dataset.category,
+    action: (select as HTMLSelectElement).value,
+  }));
+
+  // Save default action
+  await api.shield.updateDefaultAction(shieldDefaultActionSelect.value);
+  await api.shield.updateRules(rules);
+  showToast('Policy Saved', 'Global rules updated successfully.', 'var(--green)', 3000);
+});
+
+// Add workspace override
+shieldWsOverrideAddBtn.addEventListener('click', async () => {
+  const wsId = shieldWsOverrideSelect.value;
+  if (!wsId) return;
+
+  const ws = allWorkspaces.find(w => w.id === wsId);
+  // Create a default override with all categories set to the same as global
+  const policy = await api.shield.getPolicy();
+  const globalRules = policy.globalRules || [];
+
+  await api.shield.updateWorkspaceOverride(wsId, {
+    name: ws?.name || wsId,
+    rules: globalRules.map((r: any) => ({ category: r.category, action: r.action })),
+  });
+
+  await loadShieldPolicy();
+});
+
+// Install license
+shieldLicenseInstallBtn.addEventListener('click', async () => {
+  const token = shieldLicenseToken.value.trim();
+  if (!token) return;
+
+  try {
+    const result = await api.shield.installLicense(token);
+    renderLicenseStatus(result);
+    shieldLicenseToken.value = '';
+    if (result.valid) {
+      showToast('License Installed', 'Shield license is now active.', 'var(--green)', 3000);
+    } else {
+      showToast('License Invalid', result.error || 'License validation failed.', 'var(--red)', 5000);
+    }
+  } catch (err: any) {
+    showToast('Error', 'Failed to install license.', 'var(--red)', 5000);
+  }
+});
+
+// ============================================
+// Shield Custom Patterns
+// ============================================
+
+const shieldPatternsSection = document.getElementById('shield-patterns-section')!;
+const shieldPatternsTbody = document.getElementById('shield-patterns-tbody')!;
+const shieldPatternEmpty = document.getElementById('shield-pattern-empty')!;
+const shieldPatternForm = document.getElementById('shield-pattern-form')!;
+const spNameInput = document.getElementById('sp-name') as HTMLInputElement;
+const spPatternInput = document.getElementById('sp-pattern') as HTMLInputElement;
+const spTypeSelect = document.getElementById('sp-type') as HTMLSelectElement;
+const spActionSelect = document.getElementById('sp-action') as HTMLSelectElement;
+const spDescInput = document.getElementById('sp-description') as HTMLInputElement;
+const spCancelBtn = document.getElementById('sp-cancel')!;
+const spSaveBtn = document.getElementById('sp-save')!;
+const spAddBtn = document.getElementById('sp-add-btn')!;
+const spTestToggle = document.getElementById('sp-test-toggle')!;
+const spImportBtn = document.getElementById('sp-import-btn')!;
+const spExportBtn = document.getElementById('sp-export-btn')!;
+const shieldTestPanel = document.getElementById('shield-test-panel')!;
+const spTestText = document.getElementById('sp-test-text') as HTMLTextAreaElement;
+const spTestRunBtn = document.getElementById('sp-test-run')!;
+const spTestResults = document.getElementById('sp-test-results')!;
+
+let editingPatternId: string | null = null;
+let cachedCustomPatterns: any[] = [];
+
+async function loadShieldPatterns(): Promise<void> {
+  if (!shieldActive) {
+    return;
+  }
+
+  try {
+    const policy = await api.shield.getPolicy();
+    if (policy && !policy.error) {
+      cachedCustomPatterns = policy.customPatterns || [];
+      renderPatternsTable();
+    }
+  } catch {
+    shieldPatternsSection.style.display = 'none';
+  }
+}
+
+function renderPatternsTable(): void {
+  if (cachedCustomPatterns.length === 0) {
+    shieldPatternsTbody.innerHTML = '';
+    shieldPatternEmpty.style.display = '';
+    (document.getElementById('shield-patterns-table-wrap')! as HTMLElement).style.display = 'none';
+    return;
+  }
+
+  shieldPatternEmpty.style.display = 'none';
+  (document.getElementById('shield-patterns-table-wrap')! as HTMLElement).style.display = '';
+
+  shieldPatternsTbody.innerHTML = cachedCustomPatterns.map(p => `
+    <tr data-pattern-id="${escapeHtml(p.id)}">
+      <td>${escapeHtml(p.name)}</td>
+      <td title="${escapeHtml(p.pattern)}">${escapeHtml(p.pattern)}</td>
+      <td><span class="shield-pattern-type-badge${p.isRegex ? ' regex' : ''}">${p.isRegex ? 'Regex' : 'Keyword'}</span></td>
+      <td><span class="shield-action-badge ${p.action}">${p.action}</span></td>
+      <td>
+        <div class="shield-pattern-row-actions">
+          <button class="sp-edit-btn" title="Edit">&#9998;</button>
+          <button class="sp-delete-btn danger" title="Delete">&#10005;</button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+
+  // Bind edit/delete handlers
+  shieldPatternsTbody.querySelectorAll('.sp-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = (btn as HTMLElement).closest('tr')!;
+      startEditPattern(row.dataset.patternId!);
+    });
+  });
+
+  shieldPatternsTbody.querySelectorAll('.sp-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const row = (btn as HTMLElement).closest('tr')!;
+      const id = row.dataset.patternId!;
+      if (!confirm('Delete this pattern?')) return;
+      const result = await api.shield.deletePattern(id);
+      if (result && !result.error) {
+        cachedCustomPatterns = result.customPatterns || [];
+        renderPatternsTable();
+      }
+    });
+  });
+}
+
+function startAddPattern(): void {
+  editingPatternId = null;
+  spNameInput.value = '';
+  spPatternInput.value = '';
+  spTypeSelect.value = 'keyword';
+  spActionSelect.value = 'monitor';
+  spDescInput.value = '';
+  shieldPatternForm.classList.remove('hidden');
+  spNameInput.focus();
+}
+
+function startEditPattern(id: string): void {
+  const pattern = cachedCustomPatterns.find(p => p.id === id);
+  if (!pattern) return;
+  editingPatternId = id;
+  spNameInput.value = pattern.name;
+  spPatternInput.value = pattern.pattern;
+  spTypeSelect.value = pattern.isRegex ? 'regex' : 'keyword';
+  spActionSelect.value = pattern.action;
+  spDescInput.value = pattern.description || '';
+  shieldPatternForm.classList.remove('hidden');
+  spNameInput.focus();
+}
+
+function cancelPatternEdit(): void {
+  editingPatternId = null;
+  shieldPatternForm.classList.add('hidden');
+}
+
+async function savePattern(): Promise<void> {
+  const name = spNameInput.value.trim();
+  const pattern = spPatternInput.value.trim();
+  if (!name || !pattern) {
+    if (!name) spNameInput.style.borderColor = '#F85149';
+    if (!pattern) spPatternInput.style.borderColor = '#F85149';
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const patternObj = {
+    id: editingPatternId || `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name,
+    pattern,
+    isRegex: spTypeSelect.value === 'regex',
+    category: 'custom' as const,
+    action: spActionSelect.value as 'monitor' | 'warn' | 'block',
+    description: spDescInput.value.trim(),
+    createdAt: editingPatternId
+      ? (cachedCustomPatterns.find(p => p.id === editingPatternId)?.createdAt || now)
+      : now,
+    updatedAt: now,
+  };
+
+  const result = await api.shield.upsertPattern(patternObj);
+  if (result && !result.error) {
+    cachedCustomPatterns = result.customPatterns || [];
+    renderPatternsTable();
+    cancelPatternEdit();
+  }
+}
+
+function toggleTestPanel(): void {
+  shieldTestPanel.classList.toggle('hidden');
+  if (!shieldTestPanel.classList.contains('hidden')) {
+    spTestText.focus();
+  }
+}
+
+async function runPatternTest(): Promise<void> {
+  const sampleText = spTestText.value;
+  if (!sampleText.trim()) {
+    spTestResults.innerHTML = '<div class="test-no-match">Enter sample text above</div>';
+    return;
+  }
+
+  // If form is open, test the current form pattern
+  if (!shieldPatternForm.classList.contains('hidden') && spPatternInput.value.trim()) {
+    const pattern = spPatternInput.value.trim();
+    const isRegex = spTypeSelect.value === 'regex';
+    const result = await api.shield.testPattern(pattern, isRegex, sampleText);
+    if (Array.isArray(result)) {
+      renderTestResults([{ name: spNameInput.value || 'Current Pattern', matches: result }]);
+    } else {
+      spTestResults.innerHTML = `<div class="test-no-match">Error: ${escapeHtml((result as any).error)}</div>`;
+    }
+    return;
+  }
+
+  // Otherwise test all custom patterns
+  if (cachedCustomPatterns.length === 0) {
+    spTestResults.innerHTML = '<div class="test-no-match">No custom patterns to test</div>';
+    return;
+  }
+
+  const allResults: Array<{ name: string; matches: Array<{ match: string; index: number }> }> = [];
+  for (const cp of cachedCustomPatterns) {
+    const result = await api.shield.testPattern(cp.pattern, cp.isRegex, sampleText);
+    if (Array.isArray(result) && result.length > 0) {
+      allResults.push({ name: cp.name, matches: result });
+    }
+  }
+
+  if (allResults.length === 0) {
+    spTestResults.innerHTML = '<div class="test-no-match">No matches found</div>';
+  } else {
+    renderTestResults(allResults);
+  }
+}
+
+function renderTestResults(results: Array<{ name: string; matches: Array<{ match: string; index: number }> }>): void {
+  let html = '';
+  let totalMatches = 0;
+  for (const r of results) {
+    totalMatches += r.matches.length;
+    html += `<div class="test-summary">${escapeHtml(r.name)}: ${r.matches.length} match${r.matches.length !== 1 ? 'es' : ''}</div>`;
+    for (const m of r.matches.slice(0, 20)) {
+      html += `<div class="test-match">
+        <span class="test-match-text">${escapeHtml(m.match)}</span>
+        <span class="test-match-pos">at position ${m.index}</span>
+      </div>`;
+    }
+    if (r.matches.length > 20) {
+      html += `<div class="test-match"><span class="test-match-pos">...and ${r.matches.length - 20} more</span></div>`;
+    }
+  }
+  spTestResults.innerHTML = html;
+}
+
+// Shield pattern form event handlers
+spNameInput.addEventListener('input', () => { spNameInput.style.borderColor = ''; });
+spPatternInput.addEventListener('input', () => { spPatternInput.style.borderColor = ''; });
+spCancelBtn.addEventListener('click', cancelPatternEdit);
+spSaveBtn.addEventListener('click', savePattern);
+spAddBtn.addEventListener('click', startAddPattern);
+spTestToggle.addEventListener('click', toggleTestPanel);
+spTestRunBtn.addEventListener('click', runPatternTest);
+
+spExportBtn.addEventListener('click', async () => {
+  const result = await api.shield.exportPolicy();
+  if (result?.error) {
+    alert('Export failed: ' + result.error);
+  }
+});
+
+spImportBtn.addEventListener('click', async () => {
+  const result = await api.shield.importPolicy();
+  if (result?.error) {
+    alert('Import failed: ' + result.error);
+  } else if (result?.success) {
+    // Reload patterns from the imported policy
+    await loadShieldPatterns();
+  }
+});
+
+// ============================================
+// Scan Provider Settings
+// ============================================
+
+async function loadScanProviderSettings(): Promise<void> {
+  if (!shieldActive) {
+    scanProviderSection.style.display = 'none';
+    return;
+  }
+
+  try {
+    const status = await api.shield.getScanProviderStatus();
+    scanProviderName.textContent = status.providerName || 'Not configured';
+    scanProviderIndicator.className = `scan-provider-indicator ${status.configured ? 'configured' : 'unconfigured'}`;
+    shieldSupportsScanning = true;
+
+    // Show/hide scan fields in workspace modal if already open
+    scanPolicyGroup.style.display = '';
+    scanBackgroundGroup.style.display = '';
+    scanBypassGroup.style.display = '';
+    scanThresholdGroup.style.display = '';
+    scanExcludeGroup.style.display = '';
+
+    // Load schema and render fields
+    const schema = await api.shield.getScanProviderSchema();
+    renderScanProviderFields(schema);
+  } catch {
+    scanProviderSection.style.display = 'none';
+    shieldSupportsScanning = false;
+  }
+}
+
+function renderScanProviderFields(schema: ScanProviderConfigField[]): void {
+  scanProviderFields.innerHTML = '';
+  for (const field of schema) {
+    const group = document.createElement('div');
+    group.className = 'form-group';
+
+    const label = document.createElement('label');
+    label.setAttribute('for', `scan-field-${field.key}`);
+    label.textContent = field.label;
+
+    const input = document.createElement('input');
+    input.type = field.type === 'password' ? 'password' : 'text';
+    input.id = `scan-field-${field.key}`;
+    input.dataset.fieldKey = field.key;
+    input.placeholder = field.placeholder || '';
+    input.autocomplete = 'off';
+
+    group.appendChild(label);
+    group.appendChild(input);
+    scanProviderFields.appendChild(group);
+  }
+}
+
+function gatherScanProviderConfig(): Record<string, string> {
+  const config: Record<string, string> = {};
+  scanProviderFields.querySelectorAll<HTMLInputElement>('[data-field-key]').forEach(input => {
+    config[input.dataset.fieldKey!] = input.value.trim();
+  });
+  return config;
+}
+
+scanProviderSaveBtn.addEventListener('click', async () => {
+  const config = gatherScanProviderConfig();
+  scanProviderResult.textContent = 'Saving & testing...';
+  scanProviderResult.className = 'settings-api-status';
+
+  const result = await api.shield.configureScanProvider(config);
+  if (result.success) {
+    scanProviderResult.textContent = 'Saved — connection successful';
+    scanProviderResult.className = 'settings-api-status success';
+    scanProviderIndicator.className = 'scan-provider-indicator configured';
+    shieldSupportsScanning = true;
+  } else {
+    scanProviderResult.textContent = result.error || 'Failed to save / connect';
+    scanProviderResult.className = 'settings-api-status error';
+  }
+});
+
+// ============================================
 // Event Bindings
 // ============================================
 
@@ -2491,6 +4262,36 @@ wsNameInput.addEventListener('input', () => { wsNameInput.style.borderColor = ''
 wsAutorestartInput.addEventListener('change', () => {
   maxRestartsGroup.style.display = wsAutorestartInput.checked ? '' : 'none';
 });
+
+// Toggle resume mode dropdown visibility based on startup command
+wsCommandInput.addEventListener('input', () => {
+  const isClaudeCmd = /^claude(\s|$)/i.test(wsCommandInput.value.trim());
+  resumeModeGroup.style.display = isClaudeCmd ? '' : 'none';
+});
+
+// Scaffold mode toggle
+existingModeBtn.addEventListener('click', () => toggleScaffoldMode(false));
+scaffoldModeBtn.addEventListener('click', () => toggleScaffoldMode(true));
+
+// Scaffold browse button
+scaffoldBrowseBtn.addEventListener('click', async () => {
+  const folder = await api.workspace.pickFolder();
+  if (folder) {
+    scaffoldParentDirInput.value = folder;
+    scaffoldParentDirInput.style.borderColor = '';
+  }
+});
+
+scaffoldParentDirInput.addEventListener('click', async () => {
+  const folder = await api.workspace.pickFolder();
+  if (folder) {
+    scaffoldParentDirInput.value = folder;
+    scaffoldParentDirInput.style.borderColor = '';
+  }
+});
+
+// Reset scaffold field highlights on input
+scaffoldProjectNameInput.addEventListener('input', () => { scaffoldProjectNameInput.style.borderColor = ''; });
 
 // #8: Template selection
 wsTemplateSelect.addEventListener('change', () => {
@@ -2635,7 +4436,7 @@ async function init(): Promise<void> {
         tab.workspace = ws;
         const leaves = findAllLeaves(tab.paneRoot);
         for (const leaf of leaves) {
-          leaf.terminal.writeln('\x1b[33m[KiteTerm] Claude CLI is not authenticated. Run "claude auth login" to sign in.\x1b[0m\r\n');
+          leaf.terminal.writeln('\x1b[33m[Tarca Terminal] Claude CLI is not authenticated. Run "claude auth login" to sign in.\x1b[0m\r\n');
         }
       }
     } else {
