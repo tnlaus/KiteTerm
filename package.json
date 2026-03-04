@@ -2,16 +2,19 @@
   "name": "tarca-terminal",
   "version": "0.1.0",
   "description": "Multi-session workspace terminal manager for Claude Code power users",
+  "author": "TNL IT Services",
   "main": "dist/main/index.js",
   "scripts": {
     "start": "npm run build && electron .",
-    "dev": "npm run build && taskkill /F /IM electron.exe 2>nul & electron .",
+    "dev": "npm run build && electron .",
     "build": "tsc && node build.js",
     "build:main": "tsc",
     "build:renderer": "node build.js",
     "watch": "tsc --watch",
-    "package": "npm run build && electron-builder --win",
-    "make": "npm run build && electron-builder --win --publish never",
+    "package": "npm run build && electron-builder",
+    "package:win": "npm run build && electron-builder --win",
+    "package:mac": "npm run build && electron-builder --mac",
+    "make": "npm run build && electron-builder --publish never",
     "postinstall": "electron-rebuild || echo 'electron-rebuild failed (missing build tools?) - prebuilt binaries may still work'"
   },
   "dependencies": {
@@ -24,8 +27,7 @@
     "uuid": "^9.0.0"
   },
   "devDependencies": {
-    "@kiteterm/plugin-types": "file:../kiteterm-plugin-types",
-    "@types/node": "^20.11.0",
+"@types/node": "^20.11.0",
     "@types/uuid": "^9.0.7",
     "electron": "^28.1.0",
     "electron-builder": "^24.9.0",
@@ -45,6 +47,30 @@
       ],
       "icon": "assets/icon.ico"
     },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "assets/icon.png",
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "dmg": {
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "assets/icon.png",
+      "category": "Development"
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
@@ -59,16 +85,6 @@
       {
         "from": "assets/",
         "to": "assets/"
-      }
-    ],
-    "extraResources:enterprise": [
-      {
-        "from": "assets/",
-        "to": "assets/"
-      },
-      {
-        "from": "../tarca-shield/release/tarca-shield/",
-        "to": "plugins/tarca-shield/"
       }
     ]
   }

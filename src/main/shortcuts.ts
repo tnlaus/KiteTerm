@@ -106,6 +106,13 @@ export function registerWindowShortcuts(window: BrowserWindow): void {
       window.webContents.send('shortcut:analytics-dashboard');
       return;
     }
+
+    // Ctrl+Shift+L — skills & agents library
+    if (input.key === 'L' && input.shift && !input.alt) {
+      event.preventDefault();
+      window.webContents.send('shortcut:open-library');
+      return;
+    }
   });
 
   // Menu bar for discoverability (and Ctrl+T, Ctrl+W, Ctrl+Q)
@@ -145,6 +152,8 @@ export function registerWindowShortcuts(window: BrowserWindow): void {
     {
       label: 'Terminal',
       submenu: [
+        { label: 'New Tab for Workspace', enabled: true, click: () => window.webContents.send('shortcut:new-tab-for-workspace') },
+        { type: 'separator' },
         { label: 'Next Tab', accelerator: 'Ctrl+Tab', enabled: true, click: () => {} },
         { label: 'Previous Tab', accelerator: 'Ctrl+Shift+Tab', enabled: true, click: () => {} },
         { type: 'separator' },
@@ -175,6 +184,11 @@ export function registerWindowShortcuts(window: BrowserWindow): void {
           label: 'Analytics Dashboard',
           accelerator: 'CommandOrControl+Shift+A',
           click: () => window.webContents.send('shortcut:analytics-dashboard'),
+        },
+        {
+          label: 'Skills & Agents Library',
+          accelerator: 'CommandOrControl+Shift+L',
+          click: () => window.webContents.send('shortcut:open-library'),
         },
         { type: 'separator' },
         { label: 'Zoom In', accelerator: 'CommandOrControl+=', role: 'zoomIn' },

@@ -68,7 +68,7 @@ export function spawnPty(
     // Claude Code integration: inject metrics env vars
     // Use base workspace ID (strip :pane-N suffix) so session files use clean filenames
     TARCA_METRICS_DIR: getMetricsDir(),
-    TARCA_WORKSPACE_ID: workspaceId.split(':')[0],
+    TARCA_WORKSPACE_ID: workspaceId.split(':')[0].split('~')[0],
   };
 
   try {
@@ -126,8 +126,8 @@ export function spawnPty(
 
     // Start metrics watcher for this workspace
     startMetricsWatcher(workspaceId, window);
-    // Session watcher uses base workspace ID (without :pane-N suffix)
-    startSessionWatcher(workspaceId.split(':')[0], window);
+    // Session watcher uses base workspace ID (without ~N:pane-N suffix)
+    startSessionWatcher(workspaceId.split(':')[0].split('~')[0], window);
 
     return { pid: ptyProcess.pid };
   } catch (err: any) {
@@ -217,7 +217,7 @@ export function killPty(workspaceId: string): void {
     managed.isAlive = false;
     activePtys.delete(workspaceId);
     stopMetricsWatcher(workspaceId);
-    stopSessionWatcher(workspaceId.split(':')[0]);
+    stopSessionWatcher(workspaceId.split(':')[0].split('~')[0]);
 
     // Clean up any pending warn prompt for this workspace
     const pending = pendingWarns.get(workspaceId);
@@ -234,11 +234,12 @@ export function killAllPtys(): void {
   }
 }
 
-// Kill all PTYs whose key starts with the given workspace ID prefix.
-// Split panes use keys like "workspaceId:pane-0", "workspaceId:pane-1", etc.
+// Kill all PTYs whose base workspace ID matches the given prefix.
+// Keys can be "wsId~N:pane-0", "wsId:pane-0", or "wsId" itself.
 export function killPtysForWorkspace(workspaceIdPrefix: string): void {
   for (const [id] of activePtys) {
-    if (id === workspaceIdPrefix || id.startsWith(workspaceIdPrefix + ':')) {
+    const baseId = id.split(':')[0].split('~')[0];
+    if (baseId === workspaceIdPrefix) {
       killPty(id);
     }
   }

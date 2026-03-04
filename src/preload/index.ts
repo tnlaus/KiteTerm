@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHANNELS, PtySpawnRequest, Workspace, WorkspaceTemplate, WorkspaceGroup, AppConfig, AppSettings, SerializedPaneNode, ClaudeMetricsEntry, ClaudeAuthStatus, ClaudeAnalytics, AnthropicApiConfig, OrgUsageReport, ScaffoldTemplateInfo, ScaffoldRequest, ScaffoldResult, ScanResult, ScanProgress, ScanProviderConfig, ScanProviderConfigField, ScanRequest } from '../shared/types';
+import { IPC_CHANNELS, PtySpawnRequest, Workspace, WorkspaceTemplate, WorkspaceGroup, AppConfig, AppSettings, SerializedPaneNode, ClaudeMetricsEntry, ClaudeAuthStatus, ClaudeAnalytics, AnthropicApiConfig, OrgUsageReport, ScaffoldTemplateInfo, ScaffoldRequest, ScaffoldResult, ScanResult, ScanProgress, ScanProviderConfig, ScanProviderConfigField, ScanRequest, LibraryEntry, LibraryPushRequest, LibraryWorkspaceView, DiscoveredItem } from '../shared/types';
 
 // Expose a safe API to the renderer process
 contextBridge.exposeInMainWorld('api', {
@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.invoke(IPC_CHANNELS.APP_SAVE_PANE_LAYOUT, { workspaceId, layout }),
     loadPaneLayout: (workspaceId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.APP_LOAD_PANE_LAYOUT, workspaceId),
+    platform: process.platform,
     getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_SETTINGS),
     updateSettings: (updates: Partial<AppSettings>) =>
       ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATE_SETTINGS, updates),
@@ -204,6 +205,33 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.invoke(IPC_CHANNELS.SHIELD_SCAN_PROVIDER_CONFIGURE, config) as Promise<{ success: boolean; error?: string }>,
   },
 
+  // --- Skills & Agents Library ---
+  library: {
+    list: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.LIBRARY_LIST) as Promise<LibraryEntry[]>,
+    importFolder: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.LIBRARY_IMPORT_FOLDER),
+    importFromPath: (sourcePath: string, type: 'skill' | 'agent') =>
+      ipcRenderer.invoke(IPC_CHANNELS.LIBRARY_IMPORT_FROM_PATH, { sourcePath, type }),
+    remove: (entryId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.LIBRARY_REMOVE, entryId),
+    refresh: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.LIBRARY_REFRESH) as Promise<LibraryEntry[]>,
+    push: (request: LibraryPushRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.LIBRARY_PUSH, request),
+    workspaceView: (workspaceId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.LIBRARY_WORKSPACE_VIEW, workspaceId) as Promise<LibraryWorkspaceView[]>,
+    scanWorkspace: (workspaceId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.LIBRARY_SCAN_WORKSPACE, workspaceId) as Promise<LibraryEntry[]>,
+    discoverAll: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.LIBRARY_DISCOVER_ALL) as Promise<DiscoveredItem[]>,
+    onOpenLibrary: (cb: () => void) => {
+      const handler = () => cb();
+      ipcRenderer.on('shortcut:open-library', handler);
+      return () => ipcRenderer.removeListener('shortcut:open-library', handler);
+    },
+  },
+
   // --- Shortcut listeners ---
   shortcuts: {
     onNewWorkspace: (cb: () => void) => {
@@ -285,6 +313,11 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.on('shortcut:toggle-sidebar', handler);
       return () => ipcRenderer.removeListener('shortcut:toggle-sidebar', handler);
     },
+    onNewTabForWorkspace: (cb: () => void) => {
+      const handler = () => cb();
+      ipcRenderer.on('shortcut:new-tab-for-workspace', handler);
+      return () => ipcRenderer.removeListener('shortcut:new-tab-for-workspace', handler);
+    },
   },
 
   // --- Tray events ---
@@ -329,6 +362,7 @@ export interface ElectronAPI {
     loadScrollback: (workspaceId: string) => Promise<string | null>;
     savePaneLayout: (workspaceId: string, layout: SerializedPaneNode) => Promise<boolean>;
     loadPaneLayout: (workspaceId: string) => Promise<SerializedPaneNode | null>;
+    platform: string;
     getSettings: () => Promise<AppSettings>;
     updateSettings: (updates: Partial<AppSettings>) => Promise<AppSettings>;
   };
@@ -388,6 +422,18 @@ export interface ElectronAPI {
     getScanProviderSchema: () => Promise<ScanProviderConfigField[]>;
     configureScanProvider: (config: Record<string, string>) => Promise<{ success: boolean; error?: string }>;
   };
+  library: {
+    list: () => Promise<LibraryEntry[]>;
+    importFolder: () => Promise<{ success?: boolean; canceled?: boolean; error?: string; entry?: LibraryEntry }>;
+    importFromPath: (sourcePath: string, type: 'skill' | 'agent') => Promise<{ success?: boolean; error?: string; entry?: LibraryEntry }>;
+    remove: (entryId: string) => Promise<{ success?: boolean; error?: string }>;
+    refresh: () => Promise<LibraryEntry[]>;
+    push: (request: LibraryPushRequest) => Promise<{ pushed: number; errors: string[] }>;
+    workspaceView: (workspaceId: string) => Promise<LibraryWorkspaceView[]>;
+    scanWorkspace: (workspaceId: string) => Promise<LibraryEntry[]>;
+    discoverAll: () => Promise<DiscoveredItem[]>;
+    onOpenLibrary: (cb: () => void) => () => void;
+  };
   shortcuts: {
     onNewWorkspace: (cb: () => void) => () => void;
     onCloseTab: (cb: () => void) => () => void;
@@ -404,6 +450,7 @@ export interface ElectronAPI {
     onImportConfig: (cb: () => void) => () => void;
     onSettings: (cb: () => void) => () => void;
     onToggleSidebar: (cb: () => void) => () => void;
+    onNewTabForWorkspace: (cb: () => void) => () => void;
   };
   tray: {
     onActivateWorkspace: (cb: (workspaceId: string) => void) => () => void;

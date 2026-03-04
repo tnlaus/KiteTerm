@@ -1,5 +1,5 @@
 import { ipcMain, BrowserWindow, dialog, app } from 'electron';
-import { IPC_CHANNELS, PtySpawnRequest, PtyResizeMessage, Workspace, WorkspaceTemplate, AppSettings, AnthropicApiConfig, ScaffoldRequest, ScanResult, ScanRequest } from '../shared/types';
+import { IPC_CHANNELS, PtySpawnRequest, PtyResizeMessage, Workspace, WorkspaceTemplate, AppSettings, AnthropicApiConfig, ScaffoldRequest, ScanResult, ScanRequest, LibraryPushRequest } from '../shared/types';
 import { spawnPty, writeToPty, resizePty, killPty, killPtysForWorkspace, writeCommandToPty, registerWarnResponseHandler } from './pty-manager';
 import {
   getConfig,
@@ -31,6 +31,7 @@ import {
 import { testApiConnection, fetchOrgUsage } from './anthropic-api';
 import { getShieldPlugin } from './plugin-loader';
 import { listScaffoldTemplates, scaffoldProject } from './scaffolder';
+import { importToLibrary, removeFromLibrary, refreshLibrary, pushToWorkspaces, getWorkspaceView, scanWorkspaceForItems, discoverFromAllWorkspaces } from './skills-library';
 import { refreshBackgroundScans } from './scan-scheduler';
 import { startGitWatcher, stopGitWatcher } from './git-watcher';
 import * as fs from 'fs';
@@ -48,7 +49,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     if (!win) return { error: 'No window available' };
 
     // Enforce-before-spawn gate: check if workspace requires a passing scan
-    const baseWorkspaceId = request.workspaceId.split(':')[0];
+    const baseWorkspaceId = request.workspaceId.split(':')[0].split('~')[0];
     const workspaces = getWorkspaces();
     const workspace = workspaces.find(ws => ws.id === baseWorkspaceId);
     if (!request.bypassScanGate && workspace?.scanConfig?.enforcementMode === 'enforce-before-spawn') {
@@ -96,7 +97,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   ipcMain.on(IPC_CHANNELS.PTY_KILL, (_event, workspaceId: string) => {
     killPty(workspaceId);
-    stopGitWatcher(workspaceId.split(':')[0]);
+    stopGitWatcher(workspaceId.split(':')[0].split('~')[0]);
   });
 
   ipcMain.on(IPC_CHANNELS.PTY_WRITE_COMMAND, (_event, { workspaceId, command, delay }: { workspaceId: string; command: string; delay?: number }) => {
@@ -607,5 +608,84 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     const shield = getShieldPlugin();
     if (!shield || !shield.configureScanProvider) return { success: false, error: 'Shield scanning not available' };
     return shield.configureScanProvider(config);
+  });
+
+  // --- Skills & Agents Library ---
+
+  ipcMain.handle(IPC_CHANNELS.LIBRARY_LIST, () => {
+    const { getLibraryIndex } = require('./store');
+    return getLibraryIndex();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.LIBRARY_IMPORT_FOLDER, async () => {
+    const win = getWindow();
+    if (!win) return { error: 'No window' };
+
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Import Skill or Agent',
+      properties: ['openDirectory', 'openFile'],
+      filters: [
+        { name: 'Markdown', extensions: ['md'] },
+        { name: 'All Files', extensions: ['*'] },
+      ],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+
+    const sourcePath = result.filePaths[0];
+    const isDir = fs.statSync(sourcePath).isDirectory();
+
+    // Detect type: if path contains 'agent' → agent, otherwise skill
+    const lowerPath = sourcePath.toLowerCase();
+    const type = lowerPath.includes('agent') ? 'agent' as const : 'skill' as const;
+
+    try {
+      const entry = importToLibrary(sourcePath, type);
+      return { success: true, entry };
+    } catch (err: any) {
+      return { error: err.message || 'Import failed' };
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.LIBRARY_IMPORT_FROM_PATH, (_event, { sourcePath, type }: { sourcePath: string; type: 'skill' | 'agent' }) => {
+    try {
+      const entry = importToLibrary(sourcePath, type);
+      return { success: true, entry };
+    } catch (err: any) {
+      return { error: err.message || 'Import failed' };
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.LIBRARY_REMOVE, (_event, entryId: string) => {
+    try {
+      removeFromLibrary(entryId);
+      return { success: true };
+    } catch (err: any) {
+      return { error: err.message || 'Remove failed' };
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.LIBRARY_REFRESH, () => {
+    try {
+      return refreshLibrary();
+    } catch (err: any) {
+      return { error: err.message || 'Refresh failed' };
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.LIBRARY_PUSH, (_event, request: LibraryPushRequest) => {
+    return pushToWorkspaces(request);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.LIBRARY_WORKSPACE_VIEW, (_event, workspaceId: string) => {
+    return getWorkspaceView(workspaceId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.LIBRARY_SCAN_WORKSPACE, (_event, workspaceId: string) => {
+    return scanWorkspaceForItems(workspaceId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.LIBRARY_DISCOVER_ALL, () => {
+    return discoverFromAllWorkspaces();
   });
 }

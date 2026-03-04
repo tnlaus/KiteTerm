@@ -53,10 +53,9 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: false, // node-pty needs this
     },
-    // Frameless window with custom title bar for a polished look
-    // Set to true for custom chrome, false for native title bar
+    // On macOS use hiddenInset for native traffic light buttons
     frame: true,
-    titleBarStyle: 'default',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
   });
 
   if (windowState.isMaximized) {

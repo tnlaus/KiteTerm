@@ -1,5 +1,5 @@
 import Store from 'electron-store';
-import { AppConfig, Workspace, WindowState, WorkspaceTemplate, WorkspaceGroup, AppSettings, AnthropicApiConfig } from '../shared/types';
+import { AppConfig, Workspace, WindowState, WorkspaceTemplate, WorkspaceGroup, AppSettings, AnthropicApiConfig, LibraryEntry, LibraryInstallation } from '../shared/types';
 import { v4 as uuid } from 'uuid';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -7,7 +7,7 @@ import { app, safeStorage } from 'electron';
 
 const DEFAULT_CONFIG: AppConfig = {
   version: 1,
-  defaultShell: process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh',
+  defaultShell: process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/zsh'),
   workspaces: [],
   window: {
     width: 1200,
@@ -190,8 +190,10 @@ export function importConfig(data: Partial<AppConfig>): void {
 // Settings
 const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 14,
-  fontFamily: "'Cascadia Code', 'Consolas', 'JetBrains Mono', 'Fira Code', monospace",
-  defaultShell: process.platform === 'win32' ? 'powershell.exe' : '/bin/zsh',
+  fontFamily: process.platform === 'darwin'
+    ? "'SF Mono', 'Monaco', 'Menlo', 'JetBrains Mono', 'Fira Code', monospace"
+    : "'Cascadia Code', 'Consolas', 'JetBrains Mono', 'Fira Code', monospace",
+  defaultShell: process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/zsh'),
   scrollbackLimit: 10000,
   theme: 'dark',
   notifyOnIdle: false,
@@ -259,6 +261,26 @@ export function setApiConfig(config: AnthropicApiConfig): boolean {
   } catch {
     return false;
   }
+}
+
+// Skills & Agents Library
+export function getLibraryIndex(): LibraryEntry[] {
+  return store.get('libraryIndex' as any, []) as LibraryEntry[];
+}
+
+export function setLibraryIndex(entries: LibraryEntry[]): void {
+  store.set('libraryIndex' as any, entries);
+}
+
+export function getInstallations(workspaceId: string): LibraryInstallation[] {
+  const all = store.get('libraryInstallations' as any, {}) as Record<string, LibraryInstallation[]>;
+  return all[workspaceId] || [];
+}
+
+export function setInstallations(workspaceId: string, items: LibraryInstallation[]): void {
+  const all = store.get('libraryInstallations' as any, {}) as Record<string, LibraryInstallation[]>;
+  all[workspaceId] = items;
+  store.set('libraryInstallations' as any, all);
 }
 
 export { store };

@@ -12,9 +12,9 @@
   <div id="app">
     <!-- Tab Bar -->
     <div id="tab-bar">
-      <button id="sidebar-toggle-btn" title="Toggle Sidebar (Ctrl+B)">&#9776;</button>
-      <div id="tab-list"></div>
-      <button id="add-tab-btn" title="New Workspace (Ctrl+T)">+</button>
+      <button id="sidebar-toggle-btn" title="Toggle Sidebar (Ctrl+B)" aria-label="Toggle Sidebar">&#9776;</button>
+      <div id="tab-list" role="tablist" aria-label="Workspace tabs"></div>
+      <button id="add-tab-btn" title="New Workspace (Ctrl+T)" aria-label="New Workspace">+</button>
     </div>
 
     <!-- Main Area (sidebar + terminal) -->
@@ -23,12 +23,12 @@
       <div id="sidebar">
         <div id="sidebar-header">
           <span id="sidebar-title">Workspaces</span>
-          <button id="sidebar-add-btn" title="New Workspace">+</button>
+          <button id="sidebar-add-btn" title="New Workspace" aria-label="New Workspace">+</button>
         </div>
         <div id="sidebar-filter-wrap">
           <input type="text" id="sidebar-filter" placeholder="Filter..." autocomplete="off" />
         </div>
-        <div id="sidebar-list"></div>
+        <div id="sidebar-list" role="list" aria-label="Workspaces"></div>
       </div>
 
       <!-- Terminal Container -->
@@ -37,9 +37,9 @@
         <div id="search-bar" class="hidden">
           <input type="text" id="search-input" placeholder="Find..." autocomplete="off" />
           <span id="search-match-count"></span>
-          <button id="search-prev" title="Previous (Shift+Enter)">&uarr;</button>
-          <button id="search-next" title="Next (Enter)">&darr;</button>
-          <button id="search-close" title="Close (Escape)">&times;</button>
+          <button id="search-prev" title="Previous (Shift+Enter)" aria-label="Previous match">&uarr;</button>
+          <button id="search-next" title="Next (Enter)" aria-label="Next match">&darr;</button>
+          <button id="search-close" title="Close (Escape)" aria-label="Close search">&times;</button>
         </div>
       </div>
     </div>
@@ -97,7 +97,7 @@
           <div class="form-group">
             <label for="ws-cwd">Folder</label>
             <div class="folder-input">
-              <input type="text" id="ws-cwd" placeholder="C:\path\to\project" readonly />
+              <input type="text" id="ws-cwd" placeholder="/path/to/project" readonly />
               <button id="ws-browse-btn">Browse</button>
             </div>
           </div>
@@ -105,65 +105,80 @@
             <label for="ws-command">Startup Command</label>
             <input type="text" id="ws-command" placeholder="claude" autocomplete="off" />
           </div>
-          <!-- #3: Group field -->
-          <div class="form-group">
-            <label for="ws-group">Group</label>
-            <input type="text" id="ws-group" placeholder="(optional)" autocomplete="off" />
-          </div>
           <div class="form-group">
             <label>Color</label>
             <div id="ws-colors" class="color-picker"></div>
           </div>
-          <div class="form-group checkbox-group">
-            <input type="checkbox" id="ws-autostart" checked />
-            <label for="ws-autostart">Auto-start on launch</label>
+
+          <!-- Skills & Agents selection -->
+          <div class="form-group" id="ws-library-group">
+            <label>Skills & Agents</label>
+            <div id="ws-library-checklist" class="library-checklist"></div>
+            <span class="form-hint">Selected items will be copied to the workspace's .claude/ folder</span>
           </div>
-          <div class="form-group" id="resume-mode-group">
-            <label for="ws-resume-mode">Session Resume</label>
-            <select id="ws-resume-mode">
-              <option value="continue">Continue latest session (recommended)</option>
-              <option value="resume">Resume exact session (by ID)</option>
-              <option value="off">Always start fresh</option>
-            </select>
-          </div>
-          <!-- #9: Auto-restart fields -->
-          <div class="form-group checkbox-group">
-            <input type="checkbox" id="ws-autorestart" />
-            <label for="ws-autorestart">Auto-restart on crash</label>
-          </div>
-          <div class="form-group" id="max-restarts-group" style="display: none;">
-            <label for="ws-max-restarts">Max restarts</label>
-            <input type="number" id="ws-max-restarts" value="3" min="1" max="10" />
-          </div>
-          <!-- Repo scan policy (visible only when Shield with scanning is detected) -->
-          <div class="form-group" id="scan-policy-group" style="display: none;">
-            <label for="ws-scan-policy">Repo Scan Policy</label>
-            <select id="ws-scan-policy">
-              <option value="off">Off</option>
-              <option value="manual">Manual (scan on demand)</option>
-              <option value="enforce-before-spawn">Enforce before launch</option>
-            </select>
-          </div>
-          <div class="form-group checkbox-group" id="scan-background-group" style="display: none;">
-            <input type="checkbox" id="ws-scan-background" />
-            <label for="ws-scan-background">Enable background scans</label>
-          </div>
-          <div class="form-group checkbox-group" id="scan-bypass-group" style="display: none;">
-            <input type="checkbox" id="ws-scan-bypass" checked />
-            <label for="ws-scan-bypass">Allow force-launch on scan failure</label>
-          </div>
-          <div class="form-group" id="scan-threshold-group" style="display: none;">
-            <label for="ws-scan-threshold">Fail Threshold</label>
-            <select id="ws-scan-threshold">
-              <option value="low">Any finding (low+)</option>
-              <option value="medium">Medium and above</option>
-              <option value="high" selected>High and above</option>
-              <option value="critical">Critical only</option>
-            </select>
-          </div>
-          <div class="form-group" id="scan-exclude-group" style="display: none;">
-            <label for="ws-scan-exclude">Exclude Patterns (one per line)</label>
-            <textarea id="ws-scan-exclude" rows="3" placeholder="node_modules/**&#10;*.test.ts&#10;fixtures/"></textarea>
+
+          <!-- Advanced Settings (collapsible) -->
+          <button type="button" id="ws-advanced-toggle" class="modal-advanced-toggle" aria-expanded="false" aria-controls="ws-advanced-section">
+            <span class="modal-advanced-chevron" id="ws-advanced-chevron">&#x25B6;</span>
+            Advanced Settings
+          </button>
+          <div id="ws-advanced-section" class="modal-advanced-section" role="region" aria-labelledby="ws-advanced-toggle">
+            <!-- #3: Group field -->
+            <div class="form-group">
+              <label for="ws-group">Group</label>
+              <input type="text" id="ws-group" placeholder="(optional)" autocomplete="off" />
+            </div>
+            <div class="form-group checkbox-group">
+              <input type="checkbox" id="ws-autostart" checked />
+              <label for="ws-autostart">Auto-start on launch</label>
+            </div>
+            <div class="form-group" id="resume-mode-group">
+              <label for="ws-resume-mode">Session Resume</label>
+              <select id="ws-resume-mode">
+                <option value="continue">Continue latest session (recommended)</option>
+                <option value="resume">Resume exact session (by ID)</option>
+                <option value="off">Always start fresh</option>
+              </select>
+            </div>
+            <!-- #9: Auto-restart fields -->
+            <div class="form-group checkbox-group">
+              <input type="checkbox" id="ws-autorestart" />
+              <label for="ws-autorestart">Auto-restart on crash</label>
+            </div>
+            <div class="form-group" id="max-restarts-group" style="display: none;">
+              <label for="ws-max-restarts">Max restarts</label>
+              <input type="number" id="ws-max-restarts" value="3" min="1" max="10" />
+            </div>
+            <!-- Repo scan policy (visible only when Shield with scanning is detected) -->
+            <div class="form-group" id="scan-policy-group" style="display: none;">
+              <label for="ws-scan-policy">Repo Scan Policy</label>
+              <select id="ws-scan-policy">
+                <option value="off">Off</option>
+                <option value="manual">Manual (scan on demand)</option>
+                <option value="enforce-before-spawn">Enforce before launch</option>
+              </select>
+            </div>
+            <div class="form-group checkbox-group" id="scan-background-group" style="display: none;">
+              <input type="checkbox" id="ws-scan-background" />
+              <label for="ws-scan-background">Enable background scans</label>
+            </div>
+            <div class="form-group checkbox-group" id="scan-bypass-group" style="display: none;">
+              <input type="checkbox" id="ws-scan-bypass" checked />
+              <label for="ws-scan-bypass">Allow force-launch on scan failure</label>
+            </div>
+            <div class="form-group" id="scan-threshold-group" style="display: none;">
+              <label for="ws-scan-threshold">Fail Threshold</label>
+              <select id="ws-scan-threshold">
+                <option value="low">Any finding (low+)</option>
+                <option value="medium">Medium and above</option>
+                <option value="high" selected>High and above</option>
+                <option value="critical">Critical only</option>
+              </select>
+            </div>
+            <div class="form-group" id="scan-exclude-group" style="display: none;">
+              <label for="ws-scan-exclude">Exclude Patterns (one per line)</label>
+              <textarea id="ws-scan-exclude" rows="3" placeholder="node_modules/**&#10;*.test.ts&#10;fixtures/"></textarea>
+            </div>
           </div>
         </div>
 
@@ -180,7 +195,7 @@
           <div class="form-group">
             <label for="scaffold-parent-dir">Parent Directory</label>
             <div class="folder-input">
-              <input type="text" id="scaffold-parent-dir" placeholder="C:\Users\dev\projects" readonly />
+              <input type="text" id="scaffold-parent-dir" placeholder="/path/to/projects" readonly />
               <button id="scaffold-browse-btn">Browse</button>
             </div>
           </div>
@@ -215,8 +230,8 @@
     <!-- #5: Quick Switcher -->
     <div id="quick-switcher-overlay" class="hidden">
       <div id="quick-switcher">
-        <input type="text" id="qs-input" placeholder="Switch to workspace..." autocomplete="off" />
-        <div id="qs-results"></div>
+        <input type="text" id="qs-input" placeholder="Switch to workspace..." autocomplete="off" role="combobox" aria-expanded="true" aria-controls="qs-results" aria-autocomplete="list" />
+        <div id="qs-results" role="listbox" aria-label="Workspace results"></div>
       </div>
     </div>
 
@@ -538,6 +553,58 @@
             <input type="text" id="dash-shield-filter-search" placeholder="Search detections..." autocomplete="off" />
           </div>
           <div id="dash-shield-timeline" class="shield-audit-timeline"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Skills & Agents Library Panel -->
+    <div id="library-overlay" class="hidden">
+      <div id="library-panel">
+        <div class="library-header">
+          <h2>Skills & Agents</h2>
+          <div class="library-actions">
+            <button id="lib-import-btn" class="btn-primary">+ Import</button>
+            <button id="lib-discover-btn" class="btn-secondary">Discover</button>
+            <button id="lib-refresh-btn" class="btn-secondary">Refresh</button>
+            <button id="lib-close-btn" class="btn-secondary">Close</button>
+          </div>
+        </div>
+        <div class="library-layout">
+          <div class="library-sidebar">
+            <div class="library-filter-wrap">
+              <input type="text" id="lib-filter" placeholder="Filter..." autocomplete="off" />
+            </div>
+            <div class="library-section-header">Skills</div>
+            <div id="lib-skills-list" class="library-list"></div>
+            <div class="library-section-header">Agents</div>
+            <div id="lib-agents-list" class="library-list"></div>
+          </div>
+          <div class="library-detail">
+            <div id="lib-detail-empty" class="library-detail-empty">
+              Select a skill or agent to view details
+            </div>
+            <div id="lib-detail-content" class="library-detail-content hidden">
+              <div id="lib-detail-header"></div>
+              <div id="lib-detail-desc"></div>
+              <h4>Workspace Status</h4>
+              <div id="lib-workspace-grid" class="library-workspace-grid"></div>
+              <div class="library-push-actions">
+                <button id="lib-push-all-btn" class="btn-primary">Push to All Workspaces</button>
+                <button id="lib-remove-btn" class="btn-secondary danger">Remove from Library</button>
+              </div>
+            </div>
+            <div id="lib-discover-results" class="library-discover-results hidden">
+              <div class="library-discover-header">
+                <h4>Discovered Skills & Agents</h4>
+                <span id="lib-discover-count"></span>
+              </div>
+              <div id="lib-discover-list" class="library-discover-list"></div>
+              <div class="library-discover-actions">
+                <button id="lib-discover-import-btn" class="btn-primary">Import Selected</button>
+                <button id="lib-discover-back-btn" class="btn-secondary">Back to Library</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

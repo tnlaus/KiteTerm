@@ -15,7 +15,7 @@ A desktop app (Electron) that manages multiple Claude Code terminal sessions acr
 
 ## Target Platform
 
-**Windows first.** Default shell is PowerShell. Package as `.exe` via electron-builder.
+**Windows + macOS.** Default shell is PowerShell on Windows, zsh on macOS. Package as `.exe` (NSIS) on Windows, `.dmg`/`.zip` on macOS via electron-builder.
 
 ## Architecture
 
@@ -82,10 +82,12 @@ src/
 npm install
 npm start          # Dev mode (build + run)
 npm run build      # Production build
-npm run make       # Package as .exe
+npm run make       # Package for current platform
+npm run package:win  # Package as .exe (Windows)
+npm run package:mac  # Package as .dmg (macOS)
 ```
 
-**IMPORTANT:** Before running `npm start`, always kill any lingering Electron processes first:
+**IMPORTANT (Windows):** Before running `npm start`, always kill any lingering Electron processes first:
 ```bash
 taskkill //F //IM electron.exe 2>/dev/null; npm start
 ```

@@ -92,7 +92,7 @@ export interface WindowState {
 
 // Runtime PTY state (not persisted)
 export interface PtySession {
-  id: string;          // matches workspace.id
+  id: string;          // format: "workspaceId~instanceN:pane-N" (or legacy "workspaceId:pane-N")
   pid: number;
   isRunning: boolean;
 }
@@ -223,6 +223,17 @@ export const IPC_CHANNELS = {
   SHIELD_SCAN_PROVIDER_STATUS: 'shield:scan:provider-status',
   SHIELD_SCAN_PROVIDER_SCHEMA: 'shield:scan:provider-schema',
   SHIELD_SCAN_PROVIDER_CONFIGURE: 'shield:scan:provider-configure',
+
+  // Skills & Agents Library
+  LIBRARY_LIST: 'library:list',
+  LIBRARY_IMPORT_FOLDER: 'library:import-folder',
+  LIBRARY_IMPORT_FROM_PATH: 'library:import-from-path',
+  LIBRARY_REMOVE: 'library:remove',
+  LIBRARY_REFRESH: 'library:refresh',
+  LIBRARY_PUSH: 'library:push',
+  LIBRARY_WORKSPACE_VIEW: 'library:workspace-view',
+  LIBRARY_SCAN_WORKSPACE: 'library:scan-workspace',
+  LIBRARY_DISCOVER_ALL: 'library:discover-all',
 } as const;
 
 // ============================================
@@ -407,6 +418,48 @@ export interface ScanProviderConfigField {
   type: 'text' | 'password' | 'url';
   placeholder?: string;
   required: boolean;
+}
+
+// ============================================
+// Skills & Agents Library Types
+// ============================================
+
+export interface LibraryEntry {
+  id: string;           // slug derived from folder/file name
+  type: 'skill' | 'agent';
+  name: string;         // from YAML frontmatter
+  description: string;  // from YAML frontmatter
+  contentHash: string;  // SHA-256 of all file contents
+  isFolder: boolean;    // folder-based vs single-file
+  addedAt: number;
+  updatedAt: number;
+}
+
+export interface LibraryInstallation {
+  entryId: string;
+  contentHash: string;  // hash at time of push
+  pushedAt: number;
+}
+
+export type LibrarySyncStatus = 'installed' | 'update-available' | 'not-installed';
+
+export interface DiscoveredItem {
+  entry: LibraryEntry;
+  sourcePath: string;      // full path on disk
+  workspaceId: string;
+  workspaceName: string;
+}
+
+export interface LibraryPushRequest {
+  entryIds: string[];
+  workspaceIds: string[];
+}
+
+export interface LibraryWorkspaceView {
+  entry: LibraryEntry;
+  status: LibrarySyncStatus;
+  installedHash?: string;
+  pushedAt?: number;
 }
 
 // Preset colors for workspaces

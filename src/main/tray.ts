@@ -18,7 +18,13 @@ export function createTray(getWindow: () => BrowserWindow | null): Tray {
     );
     const loaded = nativeImage.createFromPath(iconPath);
     if (!loaded.isEmpty()) {
-      tray = new Tray(loaded.resize({ width: 16, height: 16 }));
+      if (process.platform === 'darwin') {
+        // macOS: mark as template image for light/dark menu bar; skip resize (OS auto-scales)
+        loaded.setTemplateImage(true);
+        tray = new Tray(loaded);
+      } else {
+        tray = new Tray(loaded.resize({ width: 16, height: 16 }));
+      }
     } else {
       // Create a minimal icon if asset doesn't exist
       tray = new Tray(createPlaceholderIcon());
@@ -31,7 +37,8 @@ export function createTray(getWindow: () => BrowserWindow | null): Tray {
   updateTrayMenu(getWindow);
 
   // Click tray icon to show/hide window
-  tray.on('click', () => {
+  // On macOS, click opens the context menu by default, so use double-click as fallback
+  const showHideHandler = () => {
     const win = getWindow();
     if (win) {
       if (win.isVisible()) {
@@ -41,7 +48,13 @@ export function createTray(getWindow: () => BrowserWindow | null): Tray {
         win.focus();
       }
     }
-  });
+  };
+
+  if (process.platform === 'darwin') {
+    tray.on('double-click', showHideHandler);
+  } else {
+    tray.on('click', showHideHandler);
+  }
 
   return tray;
 }

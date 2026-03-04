@@ -2,7 +2,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
-import { Workspace, WORKSPACE_COLORS, TerminalStatus, WorkspaceTemplate, WorkspaceGroup, SerializedPaneNode, SerializedPaneLeaf, SerializedPaneSplit, AppSettings, ClaudeMetricsEntry, ClaudeAnalytics, AnthropicApiConfig, ScaffoldTemplateInfo, ScanProgress, ScanResult, ScanFinding, ScanProviderConfigField, ScanRequest } from '../shared/types';
+import { Workspace, WORKSPACE_COLORS, TerminalStatus, WorkspaceTemplate, WorkspaceGroup, SerializedPaneNode, SerializedPaneLeaf, SerializedPaneSplit, AppSettings, ClaudeMetricsEntry, ClaudeAnalytics, AnthropicApiConfig, ScaffoldTemplateInfo, ScanProgress, ScanResult, ScanFinding, ScanProviderConfigField, ScanRequest, LibraryEntry, LibraryWorkspaceView, LibrarySyncStatus, DiscoveredItem } from '../shared/types';
 
 // Type-safe access to the preload API
 const api = window.api;
@@ -39,6 +39,7 @@ type PaneNode = PaneLeaf | PaneSplit;
 // ============================================
 
 interface TabState {
+  tabId: string; // unique instance ID: "{workspaceId}~{N}"
   workspace: Workspace;
   paneRoot: PaneNode;
   activePaneId: string;
@@ -75,7 +76,7 @@ let sidebarVisible = true;
 let currentSettings: AppSettings = {
   fontSize: 14,
   fontFamily: "'Cascadia Code', 'Consolas', 'JetBrains Mono', 'Fira Code', monospace",
-  defaultShell: 'powershell.exe',
+  defaultShell: 'powershell.exe',  // Overwritten by getSettings() in init()
   scrollbackLimit: 10000,
   theme: 'dark',
   notifyOnIdle: false,
@@ -105,6 +106,59 @@ let shieldSupportsScanning = false;
 const scanOverlays = new Map<string, HTMLElement>(); // workspaceId → overlay element
 const scanStates = new Map<string, { jobId?: string; progress?: ScanProgress; result?: ScanResult }>(); // workspaceId → scan state
 const pendingScanSpawns = new Set<string>(); // workspaceIds waiting for scan to auto-spawn
+
+// Library state
+let libraryEntries: LibraryEntry[] = [];
+let selectedLibraryEntry: LibraryEntry | null = null;
+
+// ============================================
+// Tab Instance ID Helpers (multi-tab per workspace)
+// ============================================
+
+let nextInstanceId = 1;
+
+function generateTabInstanceId(workspaceId: string): string {
+  return `${workspaceId}~${nextInstanceId++}`;
+}
+
+function getWorkspaceIdFromTabId(tabId: string): string {
+  // Strip ~N suffix to get base workspace ID
+  const tildeIdx = tabId.indexOf('~');
+  return tildeIdx >= 0 ? tabId.substring(0, tildeIdx) : tabId;
+}
+
+function getTabsForWorkspace(workspaceId: string): TabState[] {
+  const result: TabState[] = [];
+  for (const tab of tabs.values()) {
+    if (tab.workspace.id === workspaceId) {
+      result.push(tab);
+    }
+  }
+  return result;
+}
+
+function hasOpenTabsForWorkspace(workspaceId: string): boolean {
+  for (const tab of tabs.values()) {
+    if (tab.workspace.id === workspaceId) return true;
+  }
+  return false;
+}
+
+function getFirstTabForWorkspace(workspaceId: string): TabState | undefined {
+  for (const tab of tabs.values()) {
+    if (tab.workspace.id === workspaceId) return tab;
+  }
+  return undefined;
+}
+
+function getTabDisplayName(tabState: TabState): string {
+  const wsId = tabState.workspace.id;
+  const wsTabs = getTabsForWorkspace(wsId);
+  if (wsTabs.length <= 1) return tabState.workspace.name;
+  // Number them in order of appearance
+  const idx = wsTabs.indexOf(tabState);
+  return `${tabState.workspace.name} (${idx + 1})`;
+}
 
 // ============================================
 // DOM References
@@ -148,6 +202,11 @@ const templateGroup = document.getElementById('template-group')!;
 // Session resume mode
 const wsResumeModeSelect = document.getElementById('ws-resume-mode') as HTMLSelectElement;
 const resumeModeGroup = document.getElementById('resume-mode-group')!;
+
+// Advanced section toggle
+const wsAdvancedToggle = document.getElementById('ws-advanced-toggle')!;
+const wsAdvancedChevron = document.getElementById('ws-advanced-chevron')!;
+const wsAdvancedSection = document.getElementById('ws-advanced-section')!;
 
 // #7: Search bar
 const searchBar = document.getElementById('search-bar')!;
@@ -318,18 +377,18 @@ function createTerminal(): { terminal: Terminal; fitAddon: FitAddon; searchAddon
 // #2: Pane Management
 // ============================================
 
-function createPaneLeaf(workspaceId: string, paneIndex: number): PaneLeaf {
+function createPaneLeaf(tabId: string, paneIndex: number): PaneLeaf {
   const { terminal, fitAddon, searchAddon } = createTerminal();
   const container = document.createElement('div');
   container.className = 'pane-leaf';
-  const paneId = `${workspaceId}:pane-${paneIndex}`;
+  const paneId = `${tabId}:pane-${paneIndex}`;
   container.dataset.paneId = paneId;
 
   // Click to make active pane
   container.addEventListener('mousedown', () => {
-    const tab = tabs.get(workspaceId);
+    const tab = tabs.get(tabId);
     if (tab && tab.activePaneId !== paneId) {
-      setActivePane(workspaceId, paneId);
+      setActivePane(tabId, paneId);
     }
   });
 
@@ -337,7 +396,7 @@ function createPaneLeaf(workspaceId: string, paneIndex: number): PaneLeaf {
   container.addEventListener('contextmenu', (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    showTerminalContextMenu(e.clientX, e.clientY, workspaceId, paneId);
+    showTerminalContextMenu(e.clientX, e.clientY, tabId, paneId);
   });
 
   // Ctrl+C: copy if selection exists, else send SIGINT
@@ -393,8 +452,8 @@ function getActivePane(tabState: TabState): PaneLeaf | null {
   return findPaneById(tabState.paneRoot, tabState.activePaneId);
 }
 
-function setActivePane(workspaceId: string, paneId: string): void {
-  const tab = tabs.get(workspaceId);
+function setActivePane(tabId: string, paneId: string): void {
+  const tab = tabs.get(tabId);
   if (!tab) return;
 
   // Remove active-pane from all leaves
@@ -419,7 +478,7 @@ function renderPaneTree(node: PaneNode, parentEl: HTMLElement, workspaceId?: str
   node.container = document.createElement('div');
   node.container.className = `pane-split ${node.direction}`;
 
-  // Find workspaceId from the first leaf if not passed
+  // Find tabId from the first leaf if not passed
   const wsId = workspaceId || findAllLeaves(node)[0]?.id.split(':pane-')[0];
 
   const child0Wrapper = document.createElement('div');
@@ -512,11 +571,11 @@ function setupResizeHandle(handle: HTMLElement, split: PaneSplit, firstChildWrap
   });
 }
 
-function rebuildPaneDOM(workspaceId: string): void {
-  const tab = tabs.get(workspaceId);
+function rebuildPaneDOM(tabId: string): void {
+  const tab = tabs.get(tabId);
   if (!tab) return;
 
-  const wrapper = terminalContainer.querySelector(`.terminal-wrapper[data-id="${workspaceId}"]`);
+  const wrapper = terminalContainer.querySelector(`.terminal-wrapper[data-id="${tabId}"]`);
   if (!wrapper) return;
 
   wrapper.innerHTML = '';
@@ -533,15 +592,15 @@ function rebuildPaneDOM(workspaceId: string): void {
   });
 }
 
-async function splitPane(workspaceId: string, direction: 'horizontal' | 'vertical'): Promise<void> {
-  const tab = tabs.get(workspaceId);
+async function splitPane(tabId: string, direction: 'horizontal' | 'vertical'): Promise<void> {
+  const tab = tabs.get(tabId);
   if (!tab) return;
 
   const activePane = getActivePane(tab);
   if (!activePane) return;
 
   tab.paneCounter++;
-  const newLeaf = createPaneLeaf(workspaceId, tab.paneCounter);
+  const newLeaf = createPaneLeaf(tabId, tab.paneCounter);
 
   const splitNode: PaneSplit = {
     type: 'split',
@@ -554,14 +613,14 @@ async function splitPane(workspaceId: string, direction: 'horizontal' | 'vertica
   // Replace the leaf in the tree with the split
   replacePaneInTree(tab, activePane, splitNode);
 
-  rebuildPaneDOM(workspaceId);
+  rebuildPaneDOM(tabId);
 
   // Spawn PTY for new pane
-  await spawnPaneTerminal(workspaceId, newLeaf);
-  setActivePane(workspaceId, newLeaf.id);
+  await spawnPaneTerminal(tabId, newLeaf);
+  setActivePane(tabId, newLeaf.id);
 
   // Save layout after split
-  savePaneLayout(workspaceId);
+  savePaneLayout(tabId);
 }
 
 // ============================================
@@ -580,17 +639,17 @@ function serializePaneTree(node: PaneNode): SerializedPaneNode {
   };
 }
 
-function deserializePaneTree(node: SerializedPaneNode, workspaceId: string, tab: TabState): PaneNode {
+function deserializePaneTree(node: SerializedPaneNode, tabId: string, tab: TabState): PaneNode {
   if (node.type === 'leaf') {
-    // Extract pane index from id like "wsid:pane-3"
+    // Extract pane index from id like "wsid:pane-3" or "wsid~1:pane-3"
     const match = node.id.match(/:pane-(\d+)$/);
     const paneIndex = match ? parseInt(match[1], 10) : tab.paneCounter++;
     if (paneIndex >= tab.paneCounter) tab.paneCounter = paneIndex + 1;
-    return createPaneLeaf(workspaceId, paneIndex);
+    return createPaneLeaf(tabId, paneIndex);
   }
   const splitNode = node as SerializedPaneSplit;
-  const child0 = deserializePaneTree(splitNode.children[0], workspaceId, tab);
-  const child1 = deserializePaneTree(splitNode.children[1], workspaceId, tab);
+  const child0 = deserializePaneTree(splitNode.children[0], tabId, tab);
+  const child1 = deserializePaneTree(splitNode.children[1], tabId, tab);
   return {
     type: 'split',
     direction: splitNode.direction,
@@ -600,11 +659,12 @@ function deserializePaneTree(node: SerializedPaneNode, workspaceId: string, tab:
   };
 }
 
-function savePaneLayout(workspaceId: string): void {
-  const tab = tabs.get(workspaceId);
+function savePaneLayout(tabId: string): void {
+  const tab = tabs.get(tabId);
   if (!tab) return;
   const serialized = serializePaneTree(tab.paneRoot);
-  api.app.savePaneLayout(workspaceId, serialized);
+  // Save layout keyed by workspace ID (shared across tab instances)
+  api.app.savePaneLayout(tab.workspace.id, serialized);
 }
 
 function replacePaneInTree(tab: TabState, target: PaneNode, replacement: PaneNode): void {
@@ -627,8 +687,8 @@ function replaceInNode(node: PaneNode, target: PaneNode, replacement: PaneNode):
   return false;
 }
 
-function closePaneById(workspaceId: string, paneId: string): void {
-  const tab = tabs.get(workspaceId);
+function closePaneById(tabId: string, paneId: string): void {
+  const tab = tabs.get(tabId);
   if (!tab) return;
 
   const pane = findPaneById(tab.paneRoot, paneId);
@@ -636,7 +696,7 @@ function closePaneById(workspaceId: string, paneId: string): void {
 
   // If this is the only pane, close the tab instead
   if (tab.paneRoot === pane) {
-    closeTab(workspaceId);
+    closeTab(tabId);
     return;
   }
 
@@ -647,13 +707,13 @@ function closePaneById(workspaceId: string, paneId: string): void {
   // Find parent split and replace it with sibling
   const sibling = findSiblingAndRemove(tab, pane);
   if (sibling) {
-    rebuildPaneDOM(workspaceId);
+    rebuildPaneDOM(tabId);
     // Set active to first leaf of sibling
     const leaves = findAllLeaves(sibling);
     if (leaves.length > 0) {
-      setActivePane(workspaceId, leaves[0].id);
+      setActivePane(tabId, leaves[0].id);
     }
-    savePaneLayout(workspaceId);
+    savePaneLayout(tabId);
   }
 }
 
@@ -664,8 +724,8 @@ function findSiblingAndRemove(tab: TabState, target: PaneLeaf): PaneNode | null 
 // Close the split in a given direction relative to the active pane.
 // 'vertical' closes a down split, 'horizontal' closes a right split.
 // Keeps the active pane, removes the sibling.
-function closeSplitDirection(workspaceId: string, direction: 'horizontal' | 'vertical'): void {
-  const tab = tabs.get(workspaceId);
+function closeSplitDirection(tabId: string, direction: 'horizontal' | 'vertical'): void {
+  const tab = tabs.get(tabId);
   if (!tab) return;
 
   const activePane = getActivePane(tab);
@@ -690,15 +750,15 @@ function closeSplitDirection(workspaceId: string, direction: 'horizontal' | 'ver
   const survivor = parentSplit.children[activeIndex];
   replacePaneInTree(tab, parentSplit, survivor);
 
-  rebuildPaneDOM(workspaceId);
+  rebuildPaneDOM(tabId);
 
   // Ensure active pane is still set
   const survivorLeaves = findAllLeaves(survivor);
   if (survivorLeaves.length > 0 && !survivorLeaves.find(l => l.id === tab.activePaneId)) {
-    setActivePane(workspaceId, survivorLeaves[0].id);
+    setActivePane(tabId, survivorLeaves[0].id);
   }
 
-  savePaneLayout(workspaceId);
+  savePaneLayout(tabId);
 }
 
 function findParentSplit(node: PaneNode, target: PaneLeaf, direction: 'horizontal' | 'vertical'): PaneSplit | null {
@@ -761,9 +821,10 @@ function getEffectiveStartupCommand(workspace: Workspace): string {
   return cmd.trim().replace(/^claude/, `claude --resume ${workspace.lastClaudeSessionId}`);
 }
 
-async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf, startupDelayMs = 600): Promise<void> {
-  const tab = tabs.get(workspaceId);
+async function spawnPaneTerminal(tabId: string, pane: PaneLeaf, startupDelayMs = 600): Promise<void> {
+  const tab = tabs.get(tabId);
   if (!tab) return;
+  const baseWsId = tab.workspace.id;
 
   pane.status = 'starting';
 
@@ -787,9 +848,9 @@ async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf, startupDel
   if ('scanRequired' in result && (result as any).scanRequired) {
     pane.status = 'idle';
     pane.terminal.writeln('\r\n\x1b[33m[Shield] Repo scan required before launch...\x1b[0m\r\n');
-    pendingScanSpawns.add(workspaceId);
-    showScanOverlay(workspaceId);
-    triggerScan(workspaceId);
+    pendingScanSpawns.add(tabId);
+    showScanOverlay(tabId);
+    triggerScan(baseWsId);
     return;
   }
 
@@ -820,7 +881,7 @@ async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf, startupDel
         if (resumeOutputBuffer.includes('No conversation found') || resumeOutputBuffer.includes('No session found')) {
           tab._resumeAttemptTime = null;
           tab.workspace.lastClaudeSessionId = undefined;
-          api.workspace.update(workspaceId, { lastClaudeSessionId: undefined });
+          api.workspace.update(baseWsId, { lastClaudeSessionId: undefined });
           showToast('\u26A0 Resume Failed', `${tab.workspace.name}: starting fresh session`, 'var(--orange, #D29922)', 5000);
           // Send fresh claude command after a short delay
           setTimeout(() => {
@@ -851,12 +912,13 @@ async function spawnPaneTerminal(workspaceId: string, pane: PaneLeaf, startupDel
 // Repo Scan Overlay & Results
 // ============================================
 
-function showScanOverlay(workspaceId: string, incremental: boolean = false): void {
-  const wrapper = terminalContainer.querySelector(`.terminal-wrapper[data-id="${workspaceId}"]`);
+function showScanOverlay(tabOrWsId: string, incremental: boolean = false): void {
+  // tabOrWsId can be either a tabId or workspaceId
+  const wrapper = terminalContainer.querySelector(`.terminal-wrapper[data-id="${tabOrWsId}"]`);
   if (!wrapper) return;
 
   // Remove existing overlay if any
-  hideScanOverlay(workspaceId);
+  hideScanOverlay(tabOrWsId);
 
   const overlay = document.createElement('div');
   overlay.className = 'scan-overlay';
@@ -872,20 +934,21 @@ function showScanOverlay(workspaceId: string, incremental: boolean = false): voi
   `;
 
   const cancelBtn = overlay.querySelector('.scan-cancel-btn')!;
+  const wsId = tabOrWsId.includes('~') ? getWorkspaceIdFromTabId(tabOrWsId) : tabOrWsId;
   cancelBtn.addEventListener('click', () => {
-    const state = scanStates.get(workspaceId);
+    const state = scanStates.get(wsId);
     if (state?.jobId) {
       api.shield.cancelScan(state.jobId);
     }
-    hideScanOverlay(workspaceId);
-    pendingScanSpawns.delete(workspaceId);
+    hideScanOverlay(tabOrWsId);
+    pendingScanSpawns.delete(tabOrWsId);
   });
 
   wrapper.appendChild(overlay);
-  scanOverlays.set(workspaceId, overlay);
+  scanOverlays.set(tabOrWsId, overlay);
 
   // Update tab scan indicator
-  updateTabScanBadge(workspaceId, 'scanning');
+  updateTabScanBadge(tabOrWsId, 'scanning');
 }
 
 function updateScanOverlay(workspaceId: string, progress: ScanProgress): void {
@@ -942,22 +1005,24 @@ function handleScanResult(result: ScanResult): void {
   state.result = result;
   scanStates.set(result.workspaceId, state);
 
-  hideScanOverlay(result.workspaceId);
+  // Hide scan overlay on all tabs for this workspace
+  for (const tab of getTabsForWorkspace(result.workspaceId)) {
+    hideScanOverlay(tab.tabId);
+  }
 
   if (result.passed) {
     updateTabScanBadge(result.workspaceId, 'passed');
     const incrementalLabel = result.incremental ? ` (incremental, ${result.changedFiles ?? result.filesScanned} changed)` : '';
     showToast('Scan Passed', `${result.filesScanned} files scanned${incrementalLabel}, no issues found`, 'var(--green)', 3000);
 
-    // Auto-retry spawn if this was an enforce-before-spawn gate
-    if (pendingScanSpawns.has(result.workspaceId)) {
-      pendingScanSpawns.delete(result.workspaceId);
-      const tab = tabs.get(result.workspaceId);
-      if (tab) {
-        const pane = getActivePane(tab);
+    // Auto-retry spawn for any tab instances waiting on scan
+    for (const pendingTabId of Array.from(pendingScanSpawns)) {
+      const pendingTab = tabs.get(pendingTabId);
+      if (pendingTab && pendingTab.workspace.id === result.workspaceId) {
+        pendingScanSpawns.delete(pendingTabId);
+        const pane = getActivePane(pendingTab);
         if (pane) {
-          // Short delay to ensure scan result is persisted before the gate re-checks
-          setTimeout(() => spawnPaneTerminal(result.workspaceId, pane), 200);
+          setTimeout(() => spawnPaneTerminal(pendingTabId, pane), 200);
         }
       }
     }
@@ -968,11 +1033,11 @@ function handleScanResult(result: ScanResult): void {
 }
 
 function showScanResultsModal(result: ScanResult): void {
-  const tab = tabs.get(result.workspaceId);
-  const wsName = tab?.workspace.name || result.workspaceId;
+  const firstTab = getFirstTabForWorkspace(result.workspaceId);
+  const wsName = firstTab?.workspace.name || result.workspaceId;
 
   // Hide Force Launch button if bypass is disabled by policy
-  const allowBypass = tab?.workspace.scanConfig?.allowScanBypass !== false; // default true
+  const allowBypass = firstTab?.workspace.scanConfig?.allowScanBypass !== false; // default true
   scanResultsForce.style.display = allowBypass ? '' : 'none';
 
   scanResultsTitle.textContent = `Scan Results: ${wsName}`;
@@ -1024,43 +1089,50 @@ function closeScanResultsModal(): void {
   if (wsId) pendingScanSpawns.delete(wsId);
 }
 
-function updateTabScanBadge(workspaceId: string, status: 'scanning' | 'passed' | 'failed' | 'none'): void {
-  const tabEl = tabList.querySelector(`.tab[data-id="${workspaceId}"]`);
-  if (!tabEl) return;
+function updateTabScanBadge(tabOrWsId: string, status: 'scanning' | 'passed' | 'failed' | 'none'): void {
+  // Update scan badge on all tab instances for the workspace
+  const wsId = tabOrWsId.includes('~') ? getWorkspaceIdFromTabId(tabOrWsId) : tabOrWsId;
+  const wsTabs = getTabsForWorkspace(wsId);
+  // If no tabs matched by workspace, try as direct tab ID
+  const tabIds = wsTabs.length > 0 ? wsTabs.map(t => t.tabId) : [tabOrWsId];
 
-  let badge = tabEl.querySelector('.tab-scan-indicator') as HTMLElement;
-  if (status === 'none') {
-    if (badge) badge.remove();
-    return;
-  }
+  for (const tid of tabIds) {
+    const tabEl = tabList.querySelector(`.tab[data-id="${tid}"]`);
+    if (!tabEl) continue;
 
-  if (!badge) {
-    badge = document.createElement('span');
-    badge.className = 'tab-scan-indicator';
-    // Insert before close button
-    const closeBtn = tabEl.querySelector('.tab-close');
-    if (closeBtn) {
-      tabEl.insertBefore(badge, closeBtn);
-    } else {
-      tabEl.appendChild(badge);
+    let badge = tabEl.querySelector('.tab-scan-indicator') as HTMLElement;
+    if (status === 'none') {
+      if (badge) badge.remove();
+      continue;
     }
-  }
 
-  badge.className = `tab-scan-indicator ${status}`;
-  if (status === 'scanning') {
-    badge.innerHTML = '&#x21BB;'; // ↻
-    badge.title = 'Scanning...';
-  } else if (status === 'passed') {
-    badge.innerHTML = '&#x2713;'; // ✓
-    badge.title = 'Scan passed';
-  } else if (status === 'failed') {
-    badge.innerHTML = '&#x2717;'; // ✗
-    badge.title = 'Scan failed — click for details';
-    badge.style.cursor = 'pointer';
-    badge.onclick = () => {
-      const state = scanStates.get(workspaceId);
-      if (state?.result) showScanResultsModal(state.result);
-    };
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'tab-scan-indicator';
+      const closeBtn = tabEl.querySelector('.tab-close');
+      if (closeBtn) {
+        tabEl.insertBefore(badge, closeBtn);
+      } else {
+        tabEl.appendChild(badge);
+      }
+    }
+
+    badge.className = `tab-scan-indicator ${status}`;
+    if (status === 'scanning') {
+      badge.innerHTML = '&#x21BB;'; // ↻
+      badge.title = 'Scanning...';
+    } else if (status === 'passed') {
+      badge.innerHTML = '&#x2713;'; // ✓
+      badge.title = 'Scan passed';
+    } else if (status === 'failed') {
+      badge.innerHTML = '&#x2717;'; // ✗
+      badge.title = 'Scan failed — click for details';
+      badge.style.cursor = 'pointer';
+      badge.onclick = () => {
+        const state = scanStates.get(wsId);
+        if (state?.result) showScanResultsModal(state.result);
+      };
+    }
   }
 }
 
@@ -1077,7 +1149,10 @@ scanResultsRescan.addEventListener('click', () => {
   const wsId = scanResultsOverlay.dataset.workspaceId;
   if (wsId) {
     closeScanResultsModal();
-    showScanOverlay(wsId);
+    // Show overlay on the active tab if it belongs to this workspace, or first tab
+    const activeTab = activeTabId ? tabs.get(activeTabId) : null;
+    const overlayTabId = (activeTab && activeTab.workspace.id === wsId) ? activeTab.tabId : getFirstTabForWorkspace(wsId)?.tabId;
+    if (overlayTabId) showScanOverlay(overlayTabId);
     triggerScan(wsId);
   }
 });
@@ -1086,12 +1161,12 @@ scanResultsForce.addEventListener('click', async () => {
   const wsId = scanResultsOverlay.dataset.workspaceId;
   if (!wsId) return;
   // Guard: respect allowScanBypass policy
-  const wsTab = tabs.get(wsId);
+  const wsTab = getFirstTabForWorkspace(wsId);
   if (wsTab?.workspace.scanConfig?.allowScanBypass === false) return;
   {
     closeScanResultsModal();
-    // Force-spawn the terminal bypassing scan gate
-    const tab = tabs.get(wsId);
+    // Force-spawn the terminal bypassing scan gate — spawn for all pending tabs
+    const tab = getFirstTabForWorkspace(wsId);
     if (tab) {
       const pane = getActivePane(tab);
       if (pane) {
@@ -1222,12 +1297,17 @@ function renderSidebar(): void {
 }
 
 function createSidebarItem(ws: Workspace): HTMLDivElement {
-  const isOpen = tabs.has(ws.id);
-  const isActive = ws.id === activeTabId;
+  const isOpen = hasOpenTabsForWorkspace(ws.id);
+  const openCount = getTabsForWorkspace(ws.id).length;
+  const activeTab = activeTabId ? tabs.get(activeTabId) : null;
+  const isActive = activeTab?.workspace.id === ws.id;
 
   const item = document.createElement('div');
   item.className = `sidebar-item${isActive ? ' active' : ''}${!isOpen ? ' closed' : ''}`;
   item.dataset.id = ws.id;
+  item.setAttribute('role', 'listitem');
+  item.setAttribute('tabindex', '0');
+  item.setAttribute('aria-label', `${ws.name}${isOpen ? ' (open)' : ''}`);
 
   const dot = document.createElement('span');
   dot.className = `sidebar-item-dot${isOpen ? ' open' : ''}`;
@@ -1244,6 +1324,7 @@ function createSidebarItem(ws: Workspace): HTMLDivElement {
   const editBtn = document.createElement('button');
   editBtn.className = 'sidebar-item-action';
   editBtn.title = 'Edit';
+  editBtn.setAttribute('aria-label', `Edit ${ws.name}`);
   editBtn.innerHTML = '&#9998;'; // ✎ pencil
   editBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1253,6 +1334,7 @@ function createSidebarItem(ws: Workspace): HTMLDivElement {
   const deleteBtn = document.createElement('button');
   deleteBtn.className = 'sidebar-item-action danger';
   deleteBtn.title = 'Delete';
+  deleteBtn.setAttribute('aria-label', `Delete ${ws.name}`);
   deleteBtn.innerHTML = '&#128465;'; // 🗑 trash
   deleteBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1264,6 +1346,15 @@ function createSidebarItem(ws: Workspace): HTMLDivElement {
 
   item.appendChild(dot);
   item.appendChild(name);
+
+  // Show count badge when multiple tabs open for same workspace
+  if (openCount > 1) {
+    const countBadge = document.createElement('span');
+    countBadge.className = 'sidebar-item-count';
+    countBadge.textContent = String(openCount);
+    item.appendChild(countBadge);
+  }
+
   item.appendChild(actions);
 
   // Click to open or switch to workspace
@@ -1271,17 +1362,79 @@ function createSidebarItem(ws: Workspace): HTMLDivElement {
     openWorkspaceFromSidebar(ws);
   });
 
+  // Right-click context menu on sidebar item
+  item.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    closeContextMenu();
+    const menu = document.createElement('div');
+    menu.className = 'context-menu';
+    menu.setAttribute('role', 'menu');
+    menu.style.left = `${e.clientX}px`;
+    menu.style.top = `${e.clientY}px`;
+
+    const items = [
+      { label: 'New Tab', action: async () => {
+        const newTabId = await addWorkspaceTab(ws);
+        activateTab(newTabId);
+        renderSidebar();
+      }},
+      { label: 'Edit Workspace', action: () => openEditModalForWorkspace(ws) },
+      { label: 'Discover Skills & Agents', action: async () => {
+        await openLibraryPanel();
+        showDiscoverResults();
+        libDiscoverList.innerHTML = '<div class="library-discover-empty">Scanning workspace...</div>';
+        libDiscoverCount.textContent = '';
+        try {
+          // Reuse discoverAll but filter to this workspace after
+          const all = await api.library.discoverAll();
+          discoveredItems = all.filter(item => item.workspaceId === ws.id);
+        } catch {
+          discoveredItems = [];
+        }
+        renderDiscoverResults();
+      }},
+      { separator: true },
+      { label: 'Delete Workspace', action: () => deleteSidebarWorkspace(ws), danger: true },
+    ];
+
+    for (const mi of items) {
+      if ('separator' in mi) {
+        const sep = document.createElement('div');
+        sep.className = 'context-menu-separator';
+        menu.appendChild(sep);
+      } else {
+        const el = document.createElement('div');
+        el.className = `context-menu-item${(mi as any).danger ? ' danger' : ''}`;
+        el.setAttribute('role', 'menuitem');
+        const lbl = document.createElement('span');
+        lbl.textContent = mi.label!;
+        el.appendChild(lbl);
+        el.addEventListener('click', () => { closeContextMenu(); (mi as any).action(); });
+        menu.appendChild(el);
+      }
+    }
+
+    document.body.appendChild(menu);
+    activeContextMenu = menu;
+    setTimeout(() => { document.addEventListener('click', closeContextMenu, { once: true }); }, 0);
+  });
+
   return item;
 }
 
 function openWorkspaceFromSidebar(ws: Workspace): void {
-  if (tabs.has(ws.id)) {
-    // Already open — switch to it
-    activateTab(ws.id);
+  const wsTabs = getTabsForWorkspace(ws.id);
+  if (wsTabs.length === 1) {
+    // Single tab — activate it
+    activateTab(wsTabs[0].tabId);
+  } else if (wsTabs.length > 1) {
+    // Multiple tabs — activate the first one
+    activateTab(wsTabs[0].tabId);
   } else {
-    // Open as new tab
-    addWorkspaceTab(ws).then(() => {
-      activateTab(ws.id);
+    // No tabs open — create new
+    addWorkspaceTab(ws).then((newTabId) => {
+      activateTab(newTabId);
       renderSidebar();
     });
   }
@@ -1308,6 +1461,8 @@ function openEditModalForWorkspace(ws: Workspace): void {
   scaffoldModeToggle.style.display = 'none';
   scaffoldMode = false;
   toggleScaffoldMode(false);
+  // Hide library checklist in edit mode (push via library panel instead)
+  wsLibraryGroup.style.display = 'none';
   // Scan config fields
   if (shieldSupportsScanning) {
     scanPolicyGroup.style.display = '';
@@ -1327,6 +1482,11 @@ function openEditModalForWorkspace(ws: Workspace): void {
     scanThresholdGroup.style.display = 'none';
     scanExcludeGroup.style.display = 'none';
   }
+  // Auto-expand advanced section if any advanced fields are set
+  const hasAdvancedFields = !!(ws.group || !ws.autoStart || ws.autoRestart || ws.sessionResumeMode === 'off' || ws.sessionResumeMode === 'resume' || ws.scanConfig);
+  wsAdvancedSection.classList.toggle('expanded', hasAdvancedFields);
+  wsAdvancedChevron.classList.toggle('expanded', hasAdvancedFields);
+  wsAdvancedToggle.setAttribute('aria-expanded', String(hasAdvancedFields));
   modalOverlay.classList.remove('hidden');
   wsNameInput.focus();
 }
@@ -1335,9 +1495,10 @@ async function deleteSidebarWorkspace(ws: Workspace): Promise<void> {
   const confirmed = confirm(`Delete workspace "${ws.name}"? This removes it permanently.`);
   if (!confirmed) return;
 
-  // Close tab if open
-  if (tabs.has(ws.id)) {
-    closeTab(ws.id);
+  // Close ALL tab instances for this workspace
+  const wsTabs = getTabsForWorkspace(ws.id);
+  for (const tab of wsTabs) {
+    closeTab(tab.tabId);
   }
 
   await api.workspace.delete(ws.id);
@@ -1352,10 +1513,17 @@ async function deleteSidebarWorkspace(ws: Workspace): Promise<void> {
 // Tab Management
 // ============================================
 
-function createTabElement(workspace: Workspace): HTMLDivElement {
+function createTabElement(tabState: TabState): HTMLDivElement {
+  const workspace = tabState.workspace;
+  const tabId = tabState.tabId;
+  const displayName = getTabDisplayName(tabState);
+
   const tab = document.createElement('div');
   tab.className = `tab${workspace.pinned ? ' pinned' : ''}`;
-  tab.dataset.id = workspace.id;
+  tab.dataset.id = tabId;
+  tab.setAttribute('role', 'tab');
+  tab.setAttribute('tabindex', '0');
+  tab.setAttribute('aria-label', displayName);
 
   // #6: Drag-and-drop (disabled for pinned tabs)
   tab.draggable = !workspace.pinned;
@@ -1373,12 +1541,13 @@ function createTabElement(workspace: Workspace): HTMLDivElement {
 
   const name = document.createElement('span');
   name.className = 'tab-name';
-  name.textContent = workspace.name;
+  name.textContent = displayName;
 
   const closeBtn = document.createElement('button');
   closeBtn.className = 'tab-close';
   closeBtn.textContent = '\u00d7';
-  closeBtn.title = 'Close workspace';
+  closeBtn.title = 'Close tab';
+  closeBtn.setAttribute('aria-label', `Close ${displayName}`);
 
   tab.appendChild(dot);
   tab.appendChild(pinIcon);
@@ -1388,7 +1557,7 @@ function createTabElement(workspace: Workspace): HTMLDivElement {
   // Click to activate
   tab.addEventListener('click', (e) => {
     if ((e.target as HTMLElement).classList.contains('tab-close')) return;
-    activateTab(workspace.id);
+    activateTab(tabId);
   });
 
   // Close button (confirm for pinned tabs)
@@ -1397,20 +1566,20 @@ function createTabElement(workspace: Workspace): HTMLDivElement {
     if (workspace.pinned) {
       if (!confirm(`"${workspace.name}" is pinned. Close anyway?`)) return;
     }
-    closeTab(workspace.id);
+    closeTab(tabId);
   });
 
   // Right-click context menu
   tab.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    showContextMenu(e.clientX, e.clientY, workspace.id);
+    showContextMenu(e.clientX, e.clientY, tabId);
   });
 
   // #6: Drag events
   tab.addEventListener('dragstart', (e) => {
     tab.classList.add('dragging');
     e.dataTransfer!.effectAllowed = 'move';
-    e.dataTransfer!.setData('text/plain', workspace.id);
+    e.dataTransfer!.setData('text/plain', tabId);
   });
 
   tab.addEventListener('dragend', () => {
@@ -1432,7 +1601,7 @@ function createTabElement(workspace: Workspace): HTMLDivElement {
     e.preventDefault();
     tab.classList.remove('drag-over');
     const draggedId = e.dataTransfer!.getData('text/plain');
-    if (draggedId === workspace.id) return;
+    if (draggedId === tabId) return;
 
     const draggedEl = tabList.querySelector(`.tab[data-id="${draggedId}"]`);
     if (draggedEl) {
@@ -1445,22 +1614,33 @@ function createTabElement(workspace: Workspace): HTMLDivElement {
 }
 
 function persistTabOrder(): void {
-  const ids: string[] = [];
+  // Extract workspace IDs from tab order, deduplicating (multiple tabs per workspace)
+  const seen = new Set<string>();
+  const wsIds: string[] = [];
   tabList.querySelectorAll('.tab[data-id]').forEach(el => {
-    const id = (el as HTMLElement).dataset.id;
-    if (id) ids.push(id);
+    const tabId = (el as HTMLElement).dataset.id;
+    if (tabId) {
+      const wsId = getWorkspaceIdFromTabId(tabId);
+      if (!seen.has(wsId)) {
+        seen.add(wsId);
+        wsIds.push(wsId);
+      }
+    }
   });
-  api.workspace.reorder(ids);
+  api.workspace.reorder(wsIds);
 }
 
-async function addWorkspaceTab(workspace: Workspace, autoSpawn = true, startupDelayMs = 600): Promise<void> {
+async function addWorkspaceTab(workspace: Workspace, autoSpawn = true, startupDelayMs = 600): Promise<string> {
+  const tabId = generateTabInstanceId(workspace.id);
+
   // Create wrapper container for this tab's panes
   const wrapper = document.createElement('div');
   wrapper.className = 'terminal-wrapper';
-  wrapper.dataset.id = workspace.id;
+  wrapper.dataset.id = tabId;
   terminalContainer.appendChild(wrapper);
 
   const tabState: TabState = {
+    tabId,
     workspace,
     paneRoot: null as any, // will be set below
     activePaneId: '',
@@ -1474,19 +1654,22 @@ async function addWorkspaceTab(workspace: Workspace, autoSpawn = true, startupDe
     shieldHasBlock: false,
   };
 
-  tabs.set(workspace.id, tabState);
+  tabs.set(tabId, tabState);
 
-  // Try to restore saved pane layout
+  // Try to restore saved pane layout (only for first tab of workspace)
   let restoredLayout: SerializedPaneNode | null = null;
-  try {
-    restoredLayout = await api.app.loadPaneLayout(workspace.id);
-  } catch {}
+  const isFirstTab = getTabsForWorkspace(workspace.id).length <= 1;
+  if (isFirstTab) {
+    try {
+      restoredLayout = await api.app.loadPaneLayout(workspace.id);
+    } catch {}
+  }
 
   let rootNode: PaneNode;
   if (restoredLayout && restoredLayout.type === 'split') {
-    rootNode = deserializePaneTree(restoredLayout, workspace.id, tabState);
+    rootNode = deserializePaneTree(restoredLayout, tabId, tabState);
   } else {
-    rootNode = createPaneLeaf(workspace.id, 0);
+    rootNode = createPaneLeaf(tabId, 0);
     tabState.paneCounter = 1;
   }
 
@@ -1497,25 +1680,27 @@ async function addWorkspaceTab(workspace: Workspace, autoSpawn = true, startupDe
   // Render pane tree
   renderPaneTree(rootNode, wrapper);
 
-  // Open terminals and restore scrollback per-pane
+  // Open terminals and restore scrollback per-pane (only for first tab)
   for (const leaf of allLeaves) {
     leaf.terminal.open(leaf.container);
 
-    // Load per-pane scrollback
-    try {
-      const scrollback = await api.app.loadScrollback(leaf.id);
-      if (scrollback) {
-        leaf.terminal.write(scrollback);
-        leaf.terminal.writeln('\r\n\x1b[90m--- Previous session restored ---\x1b[0m\r\n');
-      } else if (leaf.id.endsWith(':pane-0')) {
-        // Backward compat: try legacy key (workspaceId without pane suffix)
-        const legacyScrollback = await api.app.loadScrollback(workspace.id);
-        if (legacyScrollback) {
-          leaf.terminal.write(legacyScrollback);
+    if (isFirstTab) {
+      // Load per-pane scrollback
+      try {
+        const scrollback = await api.app.loadScrollback(leaf.id);
+        if (scrollback) {
+          leaf.terminal.write(scrollback);
           leaf.terminal.writeln('\r\n\x1b[90m--- Previous session restored ---\x1b[0m\r\n');
+        } else if (leaf.id.endsWith(':pane-0')) {
+          // Backward compat: try legacy key (workspaceId without pane suffix)
+          const legacyScrollback = await api.app.loadScrollback(workspace.id);
+          if (legacyScrollback) {
+            leaf.terminal.write(legacyScrollback);
+            leaf.terminal.writeln('\r\n\x1b[90m--- Previous session restored ---\x1b[0m\r\n');
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
   }
 
   allLeaves[0]?.container.classList.add('active-pane');
@@ -1530,27 +1715,28 @@ async function addWorkspaceTab(workspace: Workspace, autoSpawn = true, startupDe
   // Spawn PTYs for all panes
   if (autoSpawn) {
     for (const leaf of allLeaves) {
-      await spawnPaneTerminal(workspace.id, leaf, startupDelayMs);
+      await spawnPaneTerminal(tabId, leaf, startupDelayMs);
     }
   }
 
   // Render tab bar (with groups)
   renderTabBar();
   updateEmptyState();
+  return tabId;
 }
 
-async function spawnTerminal(workspaceId: string): Promise<void> {
-  const tab = tabs.get(workspaceId);
+async function spawnTerminal(tabId: string): Promise<void> {
+  const tab = tabs.get(tabId);
   if (!tab) return;
 
   const pane = getActivePane(tab);
   if (!pane) return;
 
-  await spawnPaneTerminal(workspaceId, pane);
-  updateTabStatus(workspaceId);
+  await spawnPaneTerminal(tabId, pane);
+  updateTabStatus(tabId);
 }
 
-function activateTab(workspaceId: string): void {
+function activateTab(tabId: string): void {
   // Deactivate current
   if (activeTabId) {
     const prev = tabs.get(activeTabId);
@@ -1563,16 +1749,16 @@ function activateTab(workspaceId: string): void {
   }
 
   // Activate new
-  activeTabId = workspaceId;
-  const tab = tabs.get(workspaceId);
+  activeTabId = tabId;
+  const tab = tabs.get(tabId);
   if (tab) {
-    const wrapper = terminalContainer.querySelector(`.terminal-wrapper[data-id="${workspaceId}"]`);
+    const wrapper = terminalContainer.querySelector(`.terminal-wrapper[data-id="${tabId}"]`);
     wrapper?.classList.add('active');
 
     // #4: Clear unread badge
     tab.hasUnread = false;
     tab.unreadCount = 0;
-    updateTabBadge(workspaceId);
+    updateTabBadge(tabId);
 
     requestAnimationFrame(() => {
       findAllLeaves(tab.paneRoot).forEach(leaf => {
@@ -1584,15 +1770,15 @@ function activateTab(workspaceId: string): void {
     updateStatusBar(tab);
   }
 
-  const tabEl = tabList.querySelector(`.tab[data-id="${workspaceId}"]`);
+  const tabEl = tabList.querySelector(`.tab[data-id="${tabId}"]`);
   tabEl?.classList.add('active');
 
-  api.app.setActiveTab(workspaceId);
+  api.app.setActiveTab(tabId);
   renderSidebar();
 }
 
-function closeTab(workspaceId: string): void {
-  const tab = tabs.get(workspaceId);
+function closeTab(tabId: string): void {
+  const tab = tabs.get(tabId);
   if (!tab) return;
 
   // #1: Save scrollback before closing
@@ -1610,14 +1796,14 @@ function closeTab(workspaceId: string): void {
   });
 
   // Remove DOM
-  const wrapper = terminalContainer.querySelector(`.terminal-wrapper[data-id="${workspaceId}"]`);
+  const wrapper = terminalContainer.querySelector(`.terminal-wrapper[data-id="${tabId}"]`);
   wrapper?.remove();
 
   if (tab.restartStabilityTimer) clearTimeout(tab.restartStabilityTimer);
-  tabs.delete(workspaceId);
+  tabs.delete(tabId);
 
   // If this was the active tab, switch to another
-  if (activeTabId === workspaceId) {
+  if (activeTabId === tabId) {
     const remaining = Array.from(tabs.keys());
     if (remaining.length > 0) {
       activateTab(remaining[remaining.length - 1]);
@@ -1633,24 +1819,27 @@ function closeTab(workspaceId: string): void {
 }
 
 async function deleteWorkspaceWithConfirm(workspaceId: string): Promise<void> {
-  const tab = tabs.get(workspaceId);
   const ws = allWorkspaces.find(w => w.id === workspaceId);
-  const name = tab?.workspace.name || ws?.name || workspaceId;
+  const firstTab = getFirstTabForWorkspace(workspaceId);
+  const name = firstTab?.workspace.name || ws?.name || workspaceId;
 
   const confirmed = confirm(`Delete workspace "${name}"? This removes it permanently.`);
   if (!confirmed) return;
 
-  if (tabs.has(workspaceId)) {
-    closeTab(workspaceId);
+  // Close ALL open tab instances for this workspace
+  const wsTabs = getTabsForWorkspace(workspaceId);
+  for (const tab of wsTabs) {
+    closeTab(tab.tabId);
   }
+
   await api.workspace.delete(workspaceId);
   allWorkspaces = allWorkspaces.filter(w => w.id !== workspaceId);
   renderSidebar();
   updateEmptyState();
 }
 
-function updateTabStatus(workspaceId: string): void {
-  const tab = tabs.get(workspaceId);
+function updateTabStatus(tabId: string): void {
+  const tab = tabs.get(tabId);
   if (!tab) return;
 
   // Determine overall tab status from panes
@@ -1661,12 +1850,12 @@ function updateTabStatus(workspaceId: string): void {
 
   const overallStatus: TerminalStatus = anyRunning ? 'running' : anyStarting ? 'starting' : allDead ? 'dead' : 'idle';
 
-  const dot = tabList.querySelector(`.tab[data-id="${workspaceId}"] .tab-dot`) as HTMLElement;
+  const dot = tabList.querySelector(`.tab[data-id="${tabId}"] .tab-dot`) as HTMLElement;
   if (dot) {
     dot.classList.toggle('alive', overallStatus === 'running');
   }
 
-  if (activeTabId === workspaceId) {
+  if (activeTabId === tabId) {
     updateStatusBar(tab);
   }
 }
@@ -1726,9 +1915,9 @@ function updateEmptyState(): void {
 }
 
 // #4: Unread Badge
-function updateTabBadge(workspaceId: string): void {
-  const tab = tabs.get(workspaceId);
-  const tabEl = tabList.querySelector(`.tab[data-id="${workspaceId}"]`);
+function updateTabBadge(tabId: string): void {
+  const tab = tabs.get(tabId);
+  const tabEl = tabList.querySelector(`.tab[data-id="${tabId}"]`);
   if (!tab || !tabEl) return;
 
   let badge = tabEl.querySelector('.tab-badge') as HTMLElement;
@@ -1745,9 +1934,9 @@ function updateTabBadge(workspaceId: string): void {
 }
 
 // Shield detection badge on tabs
-function updateTabShieldBadge(workspaceId: string): void {
-  const tab = tabs.get(workspaceId);
-  const tabEl = tabList.querySelector(`.tab[data-id="${workspaceId}"]`);
+function updateTabShieldBadge(tabId: string): void {
+  const tab = tabs.get(tabId);
+  const tabEl = tabList.querySelector(`.tab[data-id="${tabId}"]`);
   if (!tab || !tabEl) return;
 
   if (tab.shieldDetectionCount > 0) {
@@ -1765,35 +1954,36 @@ function updateTabShieldBadge(workspaceId: string): void {
 
 // #3: Render tab bar with groups
 function renderTabBar(): void {
-  // Remember which tabs exist
-  const allWorkspaces = Array.from(tabs.values()).map(t => t.workspace);
+  // Collect all open tab states
+  const allTabStates = Array.from(tabs.values());
 
   // Clear tab list
   tabList.innerHTML = '';
 
-  // Group workspaces
-  const grouped = new Map<string, Workspace[]>();
-  const ungrouped: Workspace[] = [];
+  // Group tab states by workspace group
+  const grouped = new Map<string, TabState[]>();
+  const ungrouped: TabState[] = [];
 
-  for (const ws of allWorkspaces) {
-    if (ws.group) {
-      if (!grouped.has(ws.group)) grouped.set(ws.group, []);
-      grouped.get(ws.group)!.push(ws);
+  for (const ts of allTabStates) {
+    const group = ts.workspace.group;
+    if (group) {
+      if (!grouped.has(group)) grouped.set(group, []);
+      grouped.get(group)!.push(ts);
     } else {
-      ungrouped.push(ws);
+      ungrouped.push(ts);
     }
   }
 
   // Sort pinned first within each group
-  const sortPinnedFirst = (a: Workspace, b: Workspace) => {
-    if (a.pinned && !b.pinned) return -1;
-    if (!a.pinned && b.pinned) return 1;
+  const sortPinnedFirst = (a: TabState, b: TabState) => {
+    if (a.workspace.pinned && !b.workspace.pinned) return -1;
+    if (!a.workspace.pinned && b.workspace.pinned) return 1;
     return 0;
   };
 
   // Render grouped tabs
-  for (const [groupName, workspaces] of grouped) {
-    workspaces.sort(sortPinnedFirst);
+  for (const [groupName, tabStates] of grouped) {
+    tabStates.sort(sortPinnedFirst);
     const isCollapsed = groupStates.get(groupName) || false;
 
     const header = document.createElement('div');
@@ -1820,9 +2010,9 @@ function renderTabBar(): void {
     const tabContainer = document.createElement('div');
     tabContainer.className = `group-tabs${isCollapsed ? ' collapsed' : ''}`;
 
-    for (const ws of workspaces) {
-      const tabEl = createTabElement(ws);
-      if (ws.id === activeTabId) tabEl.classList.add('active');
+    for (const ts of tabStates) {
+      const tabEl = createTabElement(ts);
+      if (ts.tabId === activeTabId) tabEl.classList.add('active');
       tabContainer.appendChild(tabEl);
     }
 
@@ -1831,9 +2021,9 @@ function renderTabBar(): void {
 
   // Render ungrouped tabs (pinned first)
   ungrouped.sort(sortPinnedFirst);
-  for (const ws of ungrouped) {
-    const tabEl = createTabElement(ws);
-    if (ws.id === activeTabId) tabEl.classList.add('active');
+  for (const ts of ungrouped) {
+    const tabEl = createTabElement(ts);
+    if (ts.tabId === activeTabId) tabEl.classList.add('active');
     tabList.appendChild(tabEl);
   }
 
@@ -1880,37 +2070,40 @@ function saveScrollbackForTab(tab: TabState): void {
 
 let activeContextMenu: HTMLElement | null = null;
 
-function showContextMenu(x: number, y: number, workspaceId: string): void {
+function showContextMenu(x: number, y: number, tabId: string): void {
   closeContextMenu();
 
   const menu = document.createElement('div');
   menu.className = 'context-menu';
+    menu.setAttribute('role', 'menu');
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
-  const tabState = tabs.get(workspaceId);
+  const tabState = tabs.get(tabId);
   const isPinned = tabState?.workspace.pinned;
+  const wsId = tabState ? tabState.workspace.id : getWorkspaceIdFromTabId(tabId);
 
   const items = [
-    { label: 'Edit Workspace', action: () => openEditModal(workspaceId) },
-    { label: isPinned ? 'Unpin Tab' : 'Pin Tab', action: () => togglePin(workspaceId) },
-    { label: 'Restart Terminal', shortcut: 'Ctrl+Shift+R', action: () => restartTerminal(workspaceId) },
+    { label: 'New Tab for Workspace', action: () => openNewTabForWorkspace(tabId) },
+    { label: 'Edit Workspace', action: () => openEditModal(tabId) },
+    { label: isPinned ? 'Unpin Tab' : 'Pin Tab', action: () => togglePin(tabId) },
+    { label: 'Restart Terminal', shortcut: 'Ctrl+Shift+R', action: () => restartTerminal(tabId) },
     // #8: Save as template
-    { label: 'Save as Template', action: () => saveAsTemplate(workspaceId) },
-    { label: 'Duplicate Tab', action: () => duplicateTab(workspaceId) },
+    { label: 'Save as Template', action: () => saveAsTemplate(tabId) },
+    { label: 'Duplicate Tab', action: () => duplicateTab(tabId) },
     ...(shieldSupportsScanning ? [
-      { label: 'Scan Repository', action: () => { showScanOverlay(workspaceId); triggerScan(workspaceId); } },
-      { label: 'Quick Scan (changes only)', action: () => { showScanOverlay(workspaceId, true); triggerScan(workspaceId, { incremental: true }); } },
+      { label: 'Scan Repository', action: () => { showScanOverlay(tabId); triggerScan(wsId); } },
+      { label: 'Quick Scan (changes only)', action: () => { showScanOverlay(tabId, true); triggerScan(wsId, { incremental: true }); } },
     ] : []),
     { separator: true },
     // #2: Split pane options
-    { label: 'Split Down', shortcut: 'Ctrl+Shift+D', action: () => splitPane(workspaceId, 'vertical') },
-    { label: 'Split Right', shortcut: 'Ctrl+Shift+E', action: () => splitPane(workspaceId, 'horizontal') },
-    { label: 'Close Split Down', action: () => closeSplitDirection(workspaceId, 'vertical') },
-    { label: 'Close Split Right', action: () => closeSplitDirection(workspaceId, 'horizontal') },
+    { label: 'Split Down', shortcut: 'Ctrl+Shift+D', action: () => splitPane(tabId, 'vertical') },
+    { label: 'Split Right', shortcut: 'Ctrl+Shift+E', action: () => splitPane(tabId, 'horizontal') },
+    { label: 'Close Split Down', action: () => closeSplitDirection(tabId, 'vertical') },
+    { label: 'Close Split Right', action: () => closeSplitDirection(tabId, 'horizontal') },
     { separator: true },
-    { label: 'Close Tab', shortcut: 'Ctrl+W', action: () => closeTab(workspaceId) },
-    { label: 'Delete Workspace', action: () => deleteWorkspaceWithConfirm(workspaceId), danger: true },
+    { label: 'Close Tab', shortcut: 'Ctrl+W', action: () => closeTab(tabId) },
+    { label: 'Delete Workspace', action: () => deleteWorkspaceWithConfirm(wsId), danger: true },
   ];
 
   for (const item of items) {
@@ -1921,6 +2114,7 @@ function showContextMenu(x: number, y: number, workspaceId: string): void {
     } else {
       const el = document.createElement('div');
       el.className = `context-menu-item${(item as any).danger ? ' danger' : ''}`;
+      el.setAttribute('role', 'menuitem');
 
       const label = document.createElement('span');
       label.textContent = item.label;
@@ -1968,10 +2162,10 @@ function closeContextMenu(): void {
   }
 }
 
-function showTerminalContextMenu(x: number, y: number, workspaceId: string, paneId: string): void {
+function showTerminalContextMenu(x: number, y: number, tabId: string, paneId: string): void {
   closeContextMenu();
 
-  const tab = tabs.get(workspaceId);
+  const tab = tabs.get(tabId);
   if (!tab) return;
 
   const pane = findPaneById(tab.paneRoot, paneId);
@@ -1982,6 +2176,7 @@ function showTerminalContextMenu(x: number, y: number, workspaceId: string, pane
 
   const menu = document.createElement('div');
   menu.className = 'context-menu';
+    menu.setAttribute('role', 'menu');
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
@@ -2015,9 +2210,9 @@ function showTerminalContextMenu(x: number, y: number, workspaceId: string, pane
     { separator: true },
     { label: 'Find', shortcut: 'Ctrl+F', action: () => openSearch() },
     { separator: true },
-    { label: 'Split Down', shortcut: 'Ctrl+Shift+D', action: () => splitPane(workspaceId, 'vertical') },
-    { label: 'Split Right', shortcut: 'Ctrl+Shift+E', action: () => splitPane(workspaceId, 'horizontal') },
-    { label: 'Close Pane', shortcut: 'Ctrl+Shift+W', danger: true, hidden: !hasMultiplePanes, action: () => closePaneById(workspaceId, paneId) },
+    { label: 'Split Down', shortcut: 'Ctrl+Shift+D', action: () => splitPane(tabId, 'vertical') },
+    { label: 'Split Right', shortcut: 'Ctrl+Shift+E', action: () => splitPane(tabId, 'horizontal') },
+    { label: 'Close Pane', shortcut: 'Ctrl+Shift+W', danger: true, hidden: !hasMultiplePanes, action: () => closePaneById(tabId, paneId) },
   ];
 
   for (const item of items) {
@@ -2029,6 +2224,7 @@ function showTerminalContextMenu(x: number, y: number, workspaceId: string, pane
     } else {
       const el = document.createElement('div');
       el.className = 'context-menu-item' + (item.danger ? ' danger' : '') + (item.disabled ? ' disabled' : '');
+      el.setAttribute('role', 'menuitem');
 
       const label = document.createElement('span');
       label.textContent = item.label!;
@@ -2090,8 +2286,8 @@ function populateTemplateDropdown(): void {
   }
 }
 
-function saveAsTemplate(workspaceId: string): void {
-  const tab = tabs.get(workspaceId);
+function saveAsTemplate(tabId: string): void {
+  const tab = tabs.get(tabId);
   if (!tab) return;
 
   const name = prompt('Template name:', `${tab.workspace.name} Template`);
@@ -2345,13 +2541,22 @@ function openNewModal(): void {
   scaffoldModeToggle.style.display = '';
   loadScaffoldTemplates();
 
+  // Collapse advanced section for new workspace
+  wsAdvancedSection.classList.remove('expanded');
+  wsAdvancedChevron.classList.remove('expanded');
+  wsAdvancedToggle.setAttribute('aria-expanded', 'false');
+
+  // Populate library checklist
+  populateLibraryChecklist();
+
   modalOverlay.classList.remove('hidden');
   wsNameInput.focus();
 }
 
-function openEditModal(workspaceId: string): void {
-  const tab = tabs.get(workspaceId);
-  const ws = tab?.workspace || allWorkspaces.find(w => w.id === workspaceId);
+function openEditModal(tabId: string): void {
+  const tab = tabs.get(tabId);
+  const wsId = tab ? tab.workspace.id : tabId;
+  const ws = tab?.workspace || allWorkspaces.find(w => w.id === wsId);
   if (!ws) return;
   openEditModalForWorkspace(ws);
 }
@@ -2410,11 +2615,10 @@ async function saveModal(): Promise<void> {
     });
 
     if (updated) {
-      // Update in open tab if present
-      const tab = tabs.get(editingWorkspaceId);
-      if (tab) {
+      // Update in ALL open tab instances for this workspace
+      for (const tab of getTabsForWorkspace(editingWorkspaceId)) {
         tab.workspace = updated;
-        if (activeTabId === editingWorkspaceId) {
+        if (activeTabId === tab.tabId) {
           updateStatusBar(tab);
         }
       }
@@ -2439,8 +2643,17 @@ async function saveModal(): Promise<void> {
     });
 
     allWorkspaces.push(workspace);
-    await addWorkspaceTab(workspace);
-    activateTab(workspace.id);
+
+    // Push selected library entries to the new workspace
+    const selectedEntryIds = getCheckedLibraryEntries();
+    if (selectedEntryIds.length > 0) {
+      try {
+        await api.library.push({ entryIds: selectedEntryIds, workspaceIds: [workspace.id] });
+      } catch {}
+    }
+
+    const newTabId = await addWorkspaceTab(workspace);
+    activateTab(newTabId);
   }
 
   closeModal();
@@ -2505,16 +2718,16 @@ async function saveScaffoldModal(): Promise<void> {
   });
 
   allWorkspaces.push(workspace);
-  await addWorkspaceTab(workspace);
-  activateTab(workspace.id);
+  const scaffoldTabId = await addWorkspaceTab(workspace);
+  activateTab(scaffoldTabId);
 
   closeModal();
   renderTabBar();
   renderSidebar();
 }
 
-async function restartTerminal(workspaceId: string): Promise<void> {
-  const tab = tabs.get(workspaceId);
+async function restartTerminal(tabId: string): Promise<void> {
+  const tab = tabs.get(tabId);
   if (!tab) return;
 
   const pane = getActivePane(tab);
@@ -2531,8 +2744,8 @@ async function restartTerminal(workspaceId: string): Promise<void> {
   api.pty.kill(pane.id);
   pane.terminal.clear();
   pane.terminal.writeln('\x1b[33mRestarting terminal...\x1b[0m\r\n');
-  await spawnPaneTerminal(workspaceId, pane);
-  updateTabStatus(workspaceId);
+  await spawnPaneTerminal(tabId, pane);
+  updateTabStatus(tabId);
 }
 
 // ============================================
@@ -2648,7 +2861,7 @@ function renderQuickSwitcherResults(query: string): void {
       const cwdMatch = fuzzyMatch(query, ws.cwd);
       const bestScore = Math.max(nameMatch.score, cwdMatch.score);
       const isMatch = nameMatch.match || cwdMatch.match;
-      const isOpen = tabs.has(ws.id);
+      const isOpen = hasOpenTabsForWorkspace(ws.id);
       return { workspace: ws, score: bestScore, match: isMatch, isOpen };
     })
     .filter(r => r.match)
@@ -2673,6 +2886,8 @@ function renderQuickSwitcherResults(query: string): void {
   results.forEach((result, index) => {
     const item = document.createElement('div');
     item.className = `qs-item${index === qsSelectedIndex ? ' selected' : ''}`;
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', String(index === qsSelectedIndex));
 
     const dot = document.createElement('span');
     dot.className = 'qs-item-dot';
@@ -2698,10 +2913,11 @@ function renderQuickSwitcherResults(query: string): void {
 
     item.addEventListener('click', () => {
       if (result.isOpen) {
-        activateTab(result.workspace.id);
+        const firstTab = getFirstTabForWorkspace(result.workspace.id);
+        if (firstTab) activateTab(firstTab.tabId);
       } else {
-        addWorkspaceTab(result.workspace).then(() => {
-          activateTab(result.workspace.id);
+        addWorkspaceTab(result.workspace).then((newTabId) => {
+          activateTab(newTabId);
           renderSidebar();
         });
       }
@@ -2729,12 +2945,16 @@ function quickSwitcherSelectCurrent(): void {
 // Tab Pinning
 // ============================================
 
-async function togglePin(workspaceId: string): Promise<void> {
-  const tab = tabs.get(workspaceId);
+async function togglePin(tabId: string): Promise<void> {
+  const tab = tabs.get(tabId);
   if (!tab) return;
   const newPinned = !tab.workspace.pinned;
-  await api.workspace.update(workspaceId, { pinned: newPinned });
+  await api.workspace.update(tab.workspace.id, { pinned: newPinned });
   tab.workspace.pinned = newPinned;
+  // Update all tabs for this workspace
+  for (const t of getTabsForWorkspace(tab.workspace.id)) {
+    t.workspace.pinned = newPinned;
+  }
   renderTabBar();
 }
 
@@ -2742,8 +2962,8 @@ async function togglePin(workspaceId: string): Promise<void> {
 // Duplicate Tab
 // ============================================
 
-async function duplicateTab(workspaceId: string): Promise<void> {
-  const tab = tabs.get(workspaceId);
+async function duplicateTab(tabId: string): Promise<void> {
+  const tab = tabs.get(tabId);
   if (!tab) return;
   const ws = tab.workspace;
   const newWs = await api.workspace.create({
@@ -2758,8 +2978,17 @@ async function duplicateTab(workspaceId: string): Promise<void> {
     maxRestarts: ws.maxRestarts,
     group: ws.group,
   });
-  await addWorkspaceTab(newWs);
-  activateTab(newWs.id);
+  allWorkspaces.push(newWs);
+  const newTabId = await addWorkspaceTab(newWs);
+  activateTab(newTabId);
+}
+
+// Open a new tab instance for the same workspace
+async function openNewTabForWorkspace(tabId: string): Promise<void> {
+  const tab = tabs.get(tabId);
+  if (!tab) return;
+  const newTabId = await addWorkspaceTab(tab.workspace);
+  activateTab(newTabId);
 }
 
 // ============================================
@@ -3203,6 +3432,388 @@ dashboardOverlay.addEventListener('keydown', (e) => {
 });
 
 // ============================================
+// Skills & Agents Library Panel
+// ============================================
+
+const libraryOverlay = document.getElementById('library-overlay')!;
+const libSkillsList = document.getElementById('lib-skills-list')!;
+const libAgentsList = document.getElementById('lib-agents-list')!;
+const libDetailEmpty = document.getElementById('lib-detail-empty')!;
+const libDetailContent = document.getElementById('lib-detail-content')!;
+const libDetailHeader = document.getElementById('lib-detail-header')!;
+const libDetailDesc = document.getElementById('lib-detail-desc')!;
+const libWorkspaceGrid = document.getElementById('lib-workspace-grid')!;
+const libFilterInput = document.getElementById('lib-filter') as HTMLInputElement;
+const libImportBtn = document.getElementById('lib-import-btn')!;
+const libRefreshBtn = document.getElementById('lib-refresh-btn')!;
+const libCloseBtn = document.getElementById('lib-close-btn')!;
+const libPushAllBtn = document.getElementById('lib-push-all-btn')!;
+const libRemoveBtn = document.getElementById('lib-remove-btn')!;
+
+async function openLibraryPanel(): Promise<void> {
+  libraryOverlay.classList.remove('hidden');
+  selectedLibraryEntry = null;
+  libDetailEmpty.style.display = '';
+  libDetailContent.classList.add('hidden');
+  libFilterInput.value = '';
+  await refreshLibraryList();
+  libFilterInput.focus();
+}
+
+function closeLibraryPanel(): void {
+  libraryOverlay.classList.add('hidden');
+  selectedLibraryEntry = null;
+}
+
+async function refreshLibraryList(): Promise<void> {
+  try {
+    libraryEntries = await api.library.list();
+  } catch {
+    libraryEntries = [];
+  }
+  renderLibraryList();
+}
+
+function renderLibraryList(): void {
+  const filter = libFilterInput.value.toLowerCase().trim();
+  const skills = libraryEntries.filter(e => e.type === 'skill' && (!filter || e.name.toLowerCase().includes(filter) || e.id.toLowerCase().includes(filter)));
+  const agents = libraryEntries.filter(e => e.type === 'agent' && (!filter || e.name.toLowerCase().includes(filter) || e.id.toLowerCase().includes(filter)));
+
+  libSkillsList.innerHTML = skills.length === 0
+    ? '<div style="padding:8px 12px;color:var(--text-muted);font-size:12px;">No skills in library</div>'
+    : skills.map(e => renderLibraryItem(e)).join('');
+
+  libAgentsList.innerHTML = agents.length === 0
+    ? '<div style="padding:8px 12px;color:var(--text-muted);font-size:12px;">No agents in library</div>'
+    : agents.map(e => renderLibraryItem(e)).join('');
+
+  // Wire click handlers
+  libSkillsList.querySelectorAll('.library-item').forEach(el => {
+    el.addEventListener('click', () => selectLibraryEntry(el.getAttribute('data-id')!));
+  });
+  libAgentsList.querySelectorAll('.library-item').forEach(el => {
+    el.addEventListener('click', () => selectLibraryEntry(el.getAttribute('data-id')!));
+  });
+}
+
+function renderLibraryItem(entry: LibraryEntry): string {
+  const isActive = selectedLibraryEntry?.id === entry.id ? ' active' : '';
+  return `<div class="library-item${isActive}" data-id="${entry.id}">
+    <span class="library-item-type ${entry.type}"></span>
+    <span class="library-item-name">${escapeHtml(entry.name || entry.id)}</span>
+  </div>`;
+}
+
+async function selectLibraryEntry(entryId: string): Promise<void> {
+  const entry = libraryEntries.find(e => e.id === entryId);
+  if (!entry) return;
+
+  selectedLibraryEntry = entry;
+  libDetailEmpty.style.display = 'none';
+  libDetailContent.classList.remove('hidden');
+
+  // Update header
+  const typeBadge = `<span class="library-type-badge ${entry.type}">${entry.type}</span>`;
+  libDetailHeader.innerHTML = `${escapeHtml(entry.name || entry.id)} ${typeBadge}`;
+  libDetailDesc.textContent = entry.description || 'No description available.';
+
+  // Re-highlight active item in sidebar
+  libraryOverlay.querySelectorAll('.library-item').forEach(el => {
+    el.classList.toggle('active', el.getAttribute('data-id') === entryId);
+  });
+
+  // Build workspace grid
+  await renderWorkspaceGrid(entry);
+}
+
+async function renderWorkspaceGrid(entry: LibraryEntry): Promise<void> {
+  if (allWorkspaces.length === 0) {
+    libWorkspaceGrid.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">No workspaces configured</div>';
+    return;
+  }
+
+  const rows: string[] = [];
+  for (const ws of allWorkspaces) {
+    let views: LibraryWorkspaceView[] = [];
+    try {
+      views = await api.library.workspaceView(ws.id);
+    } catch {}
+
+    const view = views.find(v => v.entry.id === entry.id);
+    const status: LibrarySyncStatus = view?.status || 'not-installed';
+    const statusLabel = status === 'installed' ? 'Installed' : status === 'update-available' ? 'Update Available' : 'Not Installed';
+    const pushLabel = status === 'update-available' ? 'Update' : status === 'not-installed' ? 'Push' : 'Reinstall';
+
+    rows.push(`<div class="library-ws-row">
+      <span class="library-ws-row-name">${escapeHtml(ws.name)}</span>
+      <div class="library-ws-row-actions">
+        <span class="library-status-badge ${status}">${statusLabel}</span>
+        <button class="library-ws-push-btn" data-ws-id="${ws.id}">${pushLabel}</button>
+      </div>
+    </div>`);
+  }
+
+  libWorkspaceGrid.innerHTML = rows.join('');
+
+  // Wire push buttons
+  libWorkspaceGrid.querySelectorAll('.library-ws-push-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!selectedLibraryEntry) return;
+      const wsId = btn.getAttribute('data-ws-id')!;
+      btn.textContent = 'Pushing...';
+      (btn as HTMLButtonElement).disabled = true;
+      try {
+        await api.library.push({ entryIds: [selectedLibraryEntry.id], workspaceIds: [wsId] });
+      } catch {}
+      // Refresh grid
+      await renderWorkspaceGrid(selectedLibraryEntry);
+    });
+  });
+}
+
+// Library event listeners
+libImportBtn.addEventListener('click', async () => {
+  const result = await api.library.importFolder();
+  if (result && result.success) {
+    await refreshLibraryList();
+    if (result.entry) {
+      selectLibraryEntry(result.entry.id);
+    }
+  }
+});
+
+libRefreshBtn.addEventListener('click', async () => {
+  libRefreshBtn.textContent = 'Refreshing...';
+  try {
+    libraryEntries = await api.library.refresh();
+    renderLibraryList();
+    // Re-select if current entry still exists
+    if (selectedLibraryEntry) {
+      const still = libraryEntries.find(e => e.id === selectedLibraryEntry!.id);
+      if (still) {
+        selectLibraryEntry(still.id);
+      } else {
+        selectedLibraryEntry = null;
+        libDetailEmpty.style.display = '';
+        libDetailContent.classList.add('hidden');
+      }
+    }
+  } catch {}
+  libRefreshBtn.textContent = 'Refresh';
+});
+
+libCloseBtn.addEventListener('click', closeLibraryPanel);
+
+libPushAllBtn.addEventListener('click', async () => {
+  if (!selectedLibraryEntry) return;
+  const wsIds = allWorkspaces.map(ws => ws.id);
+  if (wsIds.length === 0) return;
+  libPushAllBtn.textContent = 'Pushing...';
+  (libPushAllBtn as HTMLButtonElement).disabled = true;
+  try {
+    await api.library.push({ entryIds: [selectedLibraryEntry.id], workspaceIds: wsIds });
+  } catch {}
+  libPushAllBtn.textContent = 'Push to All Workspaces';
+  (libPushAllBtn as HTMLButtonElement).disabled = false;
+  if (selectedLibraryEntry) {
+    await renderWorkspaceGrid(selectedLibraryEntry);
+  }
+});
+
+libRemoveBtn.addEventListener('click', async () => {
+  if (!selectedLibraryEntry) return;
+  if (!confirm(`Remove "${selectedLibraryEntry.name || selectedLibraryEntry.id}" from the library? Workspace copies will not be affected.`)) return;
+  try {
+    await api.library.remove(selectedLibraryEntry.id);
+  } catch {}
+  selectedLibraryEntry = null;
+  libDetailEmpty.style.display = '';
+  libDetailContent.classList.add('hidden');
+  await refreshLibraryList();
+});
+
+libFilterInput.addEventListener('input', () => {
+  renderLibraryList();
+});
+
+libraryOverlay.addEventListener('click', (e) => {
+  if (e.target === libraryOverlay) closeLibraryPanel();
+});
+
+libraryOverlay.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeLibraryPanel();
+});
+
+// ============================================
+// Library: Discovery
+// ============================================
+
+const libDiscoverBtn = document.getElementById('lib-discover-btn')!;
+const libDiscoverResults = document.getElementById('lib-discover-results')!;
+const libDiscoverList = document.getElementById('lib-discover-list')!;
+const libDiscoverCount = document.getElementById('lib-discover-count')!;
+const libDiscoverImportBtn = document.getElementById('lib-discover-import-btn')!;
+const libDiscoverBackBtn = document.getElementById('lib-discover-back-btn')!;
+
+let discoveredItems: DiscoveredItem[] = [];
+
+function showDiscoverResults(): void {
+  libDetailEmpty.style.display = 'none';
+  libDetailContent.classList.add('hidden');
+  libDiscoverResults.classList.remove('hidden');
+  selectedLibraryEntry = null;
+  // Deselect sidebar items
+  libraryOverlay.querySelectorAll('.library-item').forEach(el => el.classList.remove('active'));
+}
+
+function hideDiscoverResults(): void {
+  libDiscoverResults.classList.add('hidden');
+  discoveredItems = [];
+  libDetailEmpty.style.display = '';
+  libDetailContent.classList.add('hidden');
+}
+
+async function runDiscoverAll(): Promise<void> {
+  showDiscoverResults();
+  libDiscoverList.innerHTML = '<div class="library-discover-empty">Scanning workspaces...</div>';
+  libDiscoverCount.textContent = '';
+  libDiscoverImportBtn.textContent = 'Import Selected';
+  (libDiscoverImportBtn as HTMLButtonElement).disabled = false;
+
+  try {
+    discoveredItems = await api.library.discoverAll();
+  } catch {
+    discoveredItems = [];
+  }
+
+  renderDiscoverResults();
+}
+
+function renderDiscoverResults(): void {
+  if (discoveredItems.length === 0) {
+    libDiscoverList.innerHTML = '<div class="library-discover-empty">No new skills or agents found in workspaces</div>';
+    libDiscoverCount.textContent = '';
+    (libDiscoverImportBtn as HTMLButtonElement).disabled = true;
+    return;
+  }
+
+  libDiscoverCount.textContent = `(${discoveredItems.length} found)`;
+
+  // Group by workspace
+  const groups = new Map<string, DiscoveredItem[]>();
+  for (const item of discoveredItems) {
+    const key = item.workspaceId;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(item);
+  }
+
+  let html = '';
+  for (const [wsId, items] of groups) {
+    const wsName = items[0].workspaceName;
+    html += `<div class="library-discover-ws-group">
+      <div class="library-discover-ws-group-header">${escapeHtml(wsName)} (${items.length})</div>`;
+    for (const item of items) {
+      const typeBadge = `<span class="library-type-badge ${item.entry.type}">${item.entry.type}</span>`;
+      const desc = item.entry.description ? escapeHtml(item.entry.description) : '';
+      html += `<label class="library-discover-item">
+        <input type="checkbox" checked data-id="${item.entry.id}" data-type="${item.entry.type}" data-source="${escapeHtml(item.sourcePath)}" />
+        <span class="library-discover-item-name">${escapeHtml(item.entry.name || item.entry.id)}</span>
+        ${typeBadge}
+        ${desc ? `<span class="library-discover-item-desc" title="${desc}">${desc}</span>` : ''}
+      </label>`;
+    }
+    html += '</div>';
+  }
+
+  libDiscoverList.innerHTML = html;
+}
+
+async function importDiscovered(): Promise<void> {
+  const checkboxes = libDiscoverList.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked');
+  if (checkboxes.length === 0) return;
+
+  libDiscoverImportBtn.textContent = 'Importing...';
+  (libDiscoverImportBtn as HTMLButtonElement).disabled = true;
+
+  let imported = 0;
+  for (const cb of checkboxes) {
+    const sourcePath = cb.getAttribute('data-source')!;
+    const type = cb.getAttribute('data-type')! as 'skill' | 'agent';
+    try {
+      const result = await api.library.importFromPath(sourcePath, type);
+      if (result && result.success) imported++;
+    } catch {}
+  }
+
+  // Refresh library list
+  await refreshLibraryList();
+
+  // Remove imported items from discovered list
+  const importedIds = new Set(
+    Array.from(checkboxes).map(cb => `${cb.getAttribute('data-id')}:${cb.getAttribute('data-type')}`)
+  );
+  discoveredItems = discoveredItems.filter(
+    item => !importedIds.has(`${item.entry.id}:${item.entry.type}`)
+  );
+
+  renderDiscoverResults();
+  libDiscoverImportBtn.textContent = 'Import Selected';
+  (libDiscoverImportBtn as HTMLButtonElement).disabled = false;
+
+  if (discoveredItems.length === 0) {
+    // All imported — go back to normal view
+    hideDiscoverResults();
+  }
+}
+
+libDiscoverBtn.addEventListener('click', () => {
+  runDiscoverAll();
+});
+
+libDiscoverImportBtn.addEventListener('click', () => {
+  importDiscovered();
+});
+
+libDiscoverBackBtn.addEventListener('click', () => {
+  hideDiscoverResults();
+});
+
+// ============================================
+// Workspace Modal: Library Checklist
+// ============================================
+
+const wsLibraryChecklist = document.getElementById('ws-library-checklist')!;
+const wsLibraryGroup = document.getElementById('ws-library-group')!;
+
+async function populateLibraryChecklist(): Promise<void> {
+  try {
+    libraryEntries = await api.library.list();
+  } catch {
+    libraryEntries = [];
+  }
+
+  if (libraryEntries.length === 0) {
+    wsLibraryGroup.style.display = 'none';
+    return;
+  }
+
+  wsLibraryGroup.style.display = '';
+  wsLibraryChecklist.innerHTML = libraryEntries.map(entry => {
+    const typeBadge = `<span class="library-type-badge ${entry.type}" style="margin-left:4px;">${entry.type}</span>`;
+    return `<label class="library-checklist-item">
+      <input type="checkbox" value="${entry.id}" checked />
+      <span>${escapeHtml(entry.name || entry.id)}</span>
+      ${typeBadge}
+    </label>`;
+  }).join('');
+}
+
+function getCheckedLibraryEntries(): string[] {
+  const checkboxes = wsLibraryChecklist.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked');
+  return Array.from(checkboxes).map(cb => cb.value);
+}
+
+// ============================================
 // Settings Panel
 // ============================================
 
@@ -3391,9 +4002,9 @@ function trackPaneActivity(paneId: string, workspaceName: string, tabId: string)
   paneIdleTimers.set(paneId, timer);
 }
 
-function showIdleNotification(workspaceName: string, workspaceId: string): void {
+function showIdleNotification(workspaceName: string, tabId: string): void {
   if (windowIsFocused) return;
-  const snippet = lastOutputSnippet.get(workspaceId) || '';
+  const snippet = lastOutputSnippet.get(tabId) || '';
   const lines = snippet.split(/[\r\n]+/).filter(l => l.trim());
   const preview = lines.length > 0 ? lines[lines.length - 1].slice(0, 80) : '';
   try {
@@ -3404,7 +4015,7 @@ function showIdleNotification(workspaceName: string, workspaceId: string): void 
     });
     n.onclick = () => {
       window.focus();
-      if (tabs.has(workspaceId)) activateTab(workspaceId);
+      if (tabs.has(tabId)) activateTab(tabId);
     };
   } catch {}
 }
@@ -3479,7 +4090,7 @@ function setupIpcListeners(): void {
         if (pane.id.endsWith(':pane-0') && tab._resumeAttemptTime && (Date.now() - tab._resumeAttemptTime) < 10000) {
           tab._resumeAttemptTime = null;
           tab.workspace.lastClaudeSessionId = undefined;
-          api.workspace.update(tabId, { lastClaudeSessionId: undefined });
+          api.workspace.update(tab.workspace.id, { lastClaudeSessionId: undefined });
           showToast('\u26A0 Resume Failed', `${tab.workspace.name}: starting fresh session`, 'var(--orange, #D29922)', 5000);
           setTimeout(async () => {
             if (!tabs.has(tabId)) return;
@@ -3574,6 +4185,11 @@ function setupIpcListeners(): void {
   // Sidebar toggle
   api.shortcuts.onToggleSidebar(() => toggleSidebar());
 
+  // New Tab for Workspace (from menu bar)
+  api.shortcuts.onNewTabForWorkspace(() => {
+    if (activeTabId) openNewTabForWorkspace(activeTabId);
+  });
+
   // Settings
   api.shortcuts.onSettings(() => {
     if (settingsOverlay.classList.contains('hidden')) {
@@ -3585,14 +4201,16 @@ function setupIpcListeners(): void {
 
   // Tray workspace activation
   api.tray.onActivateWorkspace((workspaceId) => {
-    if (tabs.has(workspaceId)) {
-      activateTab(workspaceId);
+    // workspaceId from tray is the base workspace ID
+    const firstTab = getFirstTabForWorkspace(workspaceId);
+    if (firstTab) {
+      activateTab(firstTab.tabId);
     } else {
       // Workspace not open — find it in allWorkspaces and open it
       const ws = allWorkspaces.find(w => w.id === workspaceId);
       if (ws) {
-        addWorkspaceTab(ws).then(() => {
-          activateTab(workspaceId);
+        addWorkspaceTab(ws).then((newTabId) => {
+          activateTab(newTabId);
           renderSidebar();
         });
       }
@@ -3602,7 +4220,7 @@ function setupIpcListeners(): void {
   // Claude Code metrics updates
   api.claude.onMetricsUpdate((entry) => {
     claudeMetrics.set(entry.workspaceId, entry);
-    // If this is the active tab, update display immediately
+    // If the active tab belongs to this workspace, update display immediately
     if (activeTabId) {
       const tab = tabs.get(activeTabId);
       if (tab && tab.workspace.id === entry.workspaceId) {
@@ -3613,8 +4231,10 @@ function setupIpcListeners(): void {
 
   // Claude Code session ID updates (for resume-on-reboot)
   api.claude.onSessionUpdate(({ workspaceId, sessionId }) => {
-    const tab = tabs.get(workspaceId);
-    if (tab) tab.workspace.lastClaudeSessionId = sessionId;
+    // Update all tab instances for this workspace
+    for (const tab of getTabsForWorkspace(workspaceId)) {
+      tab.workspace.lastClaudeSessionId = sessionId;
+    }
     const idx = allWorkspaces.findIndex(w => w.id === workspaceId);
     if (idx !== -1) allWorkspaces[idx].lastClaudeSessionId = sessionId;
   });
@@ -3636,14 +4256,14 @@ function setupIpcListeners(): void {
       showShieldToast(detection);
     }
 
-    // Update tab shield badge
+    // Update tab shield badge — workspaceId from shield can be a paneId like "wsId~1:pane-0"
     if (workspaceId) {
-      const baseTabId = workspaceId.split(':')[0];
-      const tab = tabs.get(baseTabId);
-      if (tab) {
+      const baseWsId = workspaceId.split(':')[0].split('~')[0];
+      // Update ALL tab instances for this workspace
+      for (const tab of getTabsForWorkspace(baseWsId)) {
         tab.shieldDetectionCount++;
         if (detection.action === 'block') tab.shieldHasBlock = true;
-        updateTabShieldBadge(baseTabId);
+        updateTabShieldBadge(tab.tabId);
       }
     }
   });
@@ -3675,6 +4295,15 @@ function setupIpcListeners(): void {
       openDashboard();
     } else {
       closeDashboard();
+    }
+  });
+
+  // Skills & Agents Library shortcut
+  api.library.onOpenLibrary(() => {
+    if (libraryOverlay.classList.contains('hidden')) {
+      openLibraryPanel();
+    } else {
+      closeLibraryPanel();
     }
   });
 }
@@ -4239,6 +4868,13 @@ sidebarFilter.addEventListener('input', () => renderSidebar());
 modalCancel.addEventListener('click', closeModal);
 modalSave.addEventListener('click', saveModal);
 
+// Advanced section toggle
+wsAdvancedToggle.addEventListener('click', () => {
+  const expanded = wsAdvancedSection.classList.toggle('expanded');
+  wsAdvancedChevron.classList.toggle('expanded', expanded);
+  wsAdvancedToggle.setAttribute('aria-expanded', String(expanded));
+});
+
 wsBrowseBtn.addEventListener('click', async () => {
   const folder = await api.workspace.pickFolder();
   if (folder) {
@@ -4373,6 +5009,11 @@ async function init(): Promise<void> {
     return;
   }
 
+  // Add platform class so CSS can target macOS-specific styles
+  if (window.api.app.platform === 'darwin') {
+    document.body.classList.add('platform-darwin');
+  }
+
   setupIpcListeners();
 
   // Load settings first so terminal creation uses correct font/theme
@@ -4422,6 +5063,7 @@ async function init(): Promise<void> {
   const STARTUP_STAGGER_MS = 3000;
   const autoStartWorkspaces = allWorkspaces.filter(ws => ws.autoStart);
   let claudeIdx = 0;
+  let firstTabId: string | null = null;
   for (let i = 0; i < autoStartWorkspaces.length; i++) {
     const ws = autoStartWorkspaces[i];
     const isClaudeWorkspace = ws.startupCommand?.includes('claude');
@@ -4429,8 +5071,9 @@ async function init(): Promise<void> {
     if (!claudeAuthenticated && isClaudeWorkspace) {
       // Spawn terminal but clear startupCommand so shell opens without running claude
       const wsWithoutCmd = { ...ws, startupCommand: undefined };
-      await addWorkspaceTab(wsWithoutCmd, true);
-      const tab = tabs.get(ws.id);
+      const newTabId = await addWorkspaceTab(wsWithoutCmd, true);
+      if (!firstTabId) firstTabId = newTabId;
+      const tab = tabs.get(newTabId);
       if (tab) {
         // Restore the original workspace reference (with startupCommand)
         tab.workspace = ws;
@@ -4441,14 +5084,25 @@ async function init(): Promise<void> {
       }
     } else {
       const startupDelay = 600 + (isClaudeWorkspace ? (claudeIdx++ * STARTUP_STAGGER_MS) : 0);
-      await addWorkspaceTab(ws, true, startupDelay);
+      const newTabId = await addWorkspaceTab(ws, true, startupDelay);
+      if (!firstTabId) firstTabId = newTabId;
     }
   }
 
   // Activate the last active tab or the first open one
-  const targetTab = config.activeTabId && tabs.has(config.activeTabId)
-    ? config.activeTabId
-    : autoStartWorkspaces[0]?.id;
+  // Backward compat: old config may store a workspace.id (no tilde) — find matching tab
+  let targetTab: string | null = null;
+  if (config.activeTabId) {
+    if (tabs.has(config.activeTabId)) {
+      // Config stored a tabId (new format)
+      targetTab = config.activeTabId;
+    } else {
+      // Config stored a workspace.id (old format) — find the first tab for that workspace
+      const match = getFirstTabForWorkspace(config.activeTabId);
+      if (match) targetTab = match.tabId;
+    }
+  }
+  if (!targetTab) targetTab = firstTabId;
 
   if (targetTab && tabs.has(targetTab)) {
     activateTab(targetTab);
